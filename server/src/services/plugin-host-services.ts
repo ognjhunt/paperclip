@@ -15,9 +15,11 @@ import { companyService } from "./companies.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
 import { issueService } from "./issues.js";
+import { routineService } from "./routines.js";
 import { goalService } from "./goals.js";
 import { documentService } from "./documents.js";
 import { heartbeatService } from "./heartbeat.js";
+import { queueIssueAssignmentWakeup } from "./issue-assignment-wakeup.js";
 import { subscribeCompanyLiveEvents } from "./live-events.js";
 import { randomUUID } from "node:crypto";
 import { activityService } from "./activity.js";
@@ -451,6 +453,7 @@ export function buildHostServices(
   const heartbeat = heartbeatService(db);
   const projects = projectService(db);
   const issues = issueService(db);
+  const routines = routineService(db);
   const documents = documentService(db);
   const goals = goalService(db);
   const activity = activityService(db);
@@ -465,6 +468,22 @@ export function buildHostServices(
   const ensureCompanyId = (companyId?: string) => {
     if (!companyId) throw new Error("companyId is required for this operation");
     return companyId;
+  };
+
+  const queuePluginIssueWakeup = async (
+    issue: { id: string; assigneeAgentId: string | null; status: string },
+    mutation: string,
+  ) => {
+    await queueIssueAssignmentWakeup({
+      heartbeat,
+      issue,
+      reason: "issue_assigned",
+      mutation,
+      contextSource: `plugin.${pluginKey}.issues.${mutation}`,
+      requestedByActorType: "system",
+      requestedByActorId: pluginId,
+      rethrowOnError: true,
+    });
   };
 
   const parseWindowValue = (value: unknown): number | null => {
@@ -770,13 +789,27 @@ export function buildHostServices(
       async create(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        return (await issues.create(companyId, params as any)) as Issue;
+        const issue = (await issues.create(companyId, params as any)) as Issue;
+        await queuePluginIssueWakeup(issue, "create");
+        return issue;
       },
       async update(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        requireInCompany("Issue", await issues.getById(params.issueId), companyId);
-        return (await issues.update(params.issueId, params.patch as any)) as Issue;
+        const existingIssue = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        const updatedIssue = (await issues.update(params.issueId, params.patch as any)) as Issue;
+        await routines.syncRunStatusForIssue(updatedIssue.id);
+
+        const assigneeChanged =
+          existingIssue.assigneeAgentId !== updatedIssue.assigneeAgentId;
+        const statusLeftBacklog =
+          existingIssue.status === "backlog" && updatedIssue.status !== "backlog";
+
+        if ((assigneeChanged || statusLeftBacklog) && updatedIssue.assigneeAgentId) {
+          await queuePluginIssueWakeup(updatedIssue, "update");
+        }
+
+        return updatedIssue;
       },
       async listComments(params) {
         const companyId = ensureCompanyId(params.companyId);
