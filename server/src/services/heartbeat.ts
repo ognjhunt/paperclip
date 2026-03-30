@@ -28,6 +28,7 @@ import { costService } from "./costs.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
+import { logActivity } from "./activity-log.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import { summarizeHeartbeatRunResultJson } from "./heartbeat-run-summary.js";
 import {
@@ -75,6 +76,42 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "opencode_local",
   "pi_local",
 ]);
+
+async function logAgentRunFailureActivity(
+  db: Db,
+  input: {
+    companyId: string;
+    agentId: string;
+    agentAdapterType: string;
+    runId: string;
+    invocationSource: string | null;
+    triggerDetail: string | null;
+    issueId?: string | null;
+    taskKey?: string | null;
+    error: string;
+    errorCode?: string | null;
+  },
+) {
+  await logActivity(db, {
+    companyId: input.companyId,
+    actorType: "agent",
+    actorId: input.agentId,
+    agentId: input.agentId,
+    runId: input.runId,
+    action: "agent.run.failed",
+    entityType: "heartbeat_run",
+    entityId: input.runId,
+    details: {
+      adapterType: input.agentAdapterType,
+      invocationSource: input.invocationSource,
+      triggerDetail: input.triggerDetail,
+      issueId: input.issueId ?? null,
+      taskKey: input.taskKey ?? null,
+      error: input.error,
+      errorCode: input.errorCode ?? null,
+    },
+  });
+}
 
 function deriveRepoNameFromRepoUrl(repoUrl: string | null): string | null {
   const trimmed = repoUrl?.trim() ?? "";
@@ -2714,6 +2751,25 @@ export function heartbeatService(db: Db) {
           }
         }
       }
+      if (finalizedRun && outcome === "failed") {
+        const failureMessage = finalizedRun.error ?? adapterResult.errorMessage ?? "Adapter failed";
+        try {
+          await logAgentRunFailureActivity(db, {
+            companyId: finalizedRun.companyId,
+            agentId: agent.id,
+            agentAdapterType: agent.adapterType,
+            runId: finalizedRun.id,
+            invocationSource: finalizedRun.invocationSource,
+            triggerDetail: finalizedRun.triggerDetail,
+            issueId,
+            taskKey,
+            error: failureMessage,
+            errorCode: finalizedRun.errorCode ?? adapterResult.errorCode ?? "adapter_failed",
+          });
+        } catch (activityErr) {
+          logger.warn({ err: activityErr, runId: finalizedRun.id }, "failed to log agent.run.failed activity");
+        }
+      }
       await finalizeAgentStatus(agent.id, outcome);
     } catch (err) {
       const message = redactCurrentUserText(
@@ -2775,6 +2831,22 @@ export function heartbeatService(db: Db) {
             lastRunId: failedRun.id,
             lastError: message,
           });
+        }
+        try {
+          await logAgentRunFailureActivity(db, {
+            companyId: failedRun.companyId,
+            agentId: agent.id,
+            agentAdapterType: agent.adapterType,
+            runId: failedRun.id,
+            invocationSource: failedRun.invocationSource,
+            triggerDetail: failedRun.triggerDetail,
+            issueId,
+            taskKey,
+            error: message,
+            errorCode: failedRun.errorCode ?? "adapter_failed",
+          });
+        } catch (activityErr) {
+          logger.warn({ err: activityErr, runId: failedRun.id }, "failed to log agent.run.failed activity");
         }
       }
 
