@@ -28,6 +28,7 @@ import type {
   IssueDocument,
   IssueDocumentSummary,
   Agent,
+  AgentRuntimeState,
   Goal,
 } from "@paperclipai/shared";
 export type { PluginLauncherRenderContextSnapshot } from "@paperclipai/shared";
@@ -640,6 +641,10 @@ export interface WorkerToHostMethods {
   ];
 
   // Agents (write)
+  "agents.update": [
+    params: { agentId: string; companyId: string; patch: Record<string, unknown> },
+    result: Agent,
+  ];
   "agents.pause": [
     params: { agentId: string; companyId: string },
     result: Agent,
@@ -651,6 +656,27 @@ export interface WorkerToHostMethods {
   "agents.invoke": [
     params: { agentId: string; companyId: string; prompt: string; reason?: string },
     result: { runId: string },
+  ];
+  "agents.wakeup": [
+    params: {
+      agentId: string;
+      companyId: string;
+      source?: "automation" | "on_demand" | "assignment" | "timer";
+      triggerDetail?: string;
+      reason?: string | null;
+      payload?: Record<string, unknown> | null;
+      idempotencyKey?: string | null;
+      forceFreshSession?: boolean;
+    },
+    result: { runId: string },
+  ];
+  "agents.resetRuntimeSession": [
+    params: { agentId: string; companyId: string; taskKey?: string | null },
+    result: (AgentRuntimeState & {
+      sessionDisplayId?: string | null;
+      sessionParamsJson?: Record<string, unknown> | null;
+      clearedTaskSessions?: number;
+    }) | null,
   ];
 
   // Agent Sessions

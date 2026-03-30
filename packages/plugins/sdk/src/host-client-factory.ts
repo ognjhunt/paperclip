@@ -173,13 +173,16 @@ export interface HostServices {
     delete(params: WorkerToHostMethods["issues.documents.delete"][0]): Promise<WorkerToHostMethods["issues.documents.delete"][1]>;
   };
 
-  /** Provides `agents.list`, `agents.get`, `agents.pause`, `agents.resume`, `agents.invoke`. */
+  /** Provides `agents.list`, `agents.get`, `agents.update`, `agents.pause`, `agents.resume`, `agents.invoke`, `agents.wakeup`, `agents.resetRuntimeSession`. */
   agents: {
     list(params: WorkerToHostMethods["agents.list"][0]): Promise<WorkerToHostMethods["agents.list"][1]>;
     get(params: WorkerToHostMethods["agents.get"][0]): Promise<WorkerToHostMethods["agents.get"][1]>;
+    update(params: WorkerToHostMethods["agents.update"][0]): Promise<WorkerToHostMethods["agents.update"][1]>;
     pause(params: WorkerToHostMethods["agents.pause"][0]): Promise<WorkerToHostMethods["agents.pause"][1]>;
     resume(params: WorkerToHostMethods["agents.resume"][0]): Promise<WorkerToHostMethods["agents.resume"][1]>;
     invoke(params: WorkerToHostMethods["agents.invoke"][0]): Promise<WorkerToHostMethods["agents.invoke"][1]>;
+    wakeup(params: WorkerToHostMethods["agents.wakeup"][0]): Promise<WorkerToHostMethods["agents.wakeup"][1]>;
+    resetRuntimeSession(params: WorkerToHostMethods["agents.resetRuntimeSession"][0]): Promise<WorkerToHostMethods["agents.resetRuntimeSession"][1]>;
   };
 
   /** Provides `agents.sessions.create`, `agents.sessions.list`, `agents.sessions.sendMessage`, `agents.sessions.close`. */
@@ -315,9 +318,12 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   // Agents
   "agents.list": "agents.read",
   "agents.get": "agents.read",
+  "agents.update": "agents.update",
   "agents.pause": "agents.pause",
   "agents.resume": "agents.resume",
   "agents.invoke": "agents.invoke",
+  "agents.wakeup": "agents.invoke",
+  "agents.resetRuntimeSession": "agents.runtime.write",
 
   // Agent Sessions
   "agents.sessions.create": "agent.sessions.create",
@@ -518,6 +524,9 @@ export function createHostClientHandlers(
     "agents.get": gated("agents.get", async (params) => {
       return services.agents.get(params);
     }),
+    "agents.update": gated("agents.update", async (params) => {
+      return services.agents.update(params);
+    }),
     "agents.pause": gated("agents.pause", async (params) => {
       return services.agents.pause(params);
     }),
@@ -526,6 +535,12 @@ export function createHostClientHandlers(
     }),
     "agents.invoke": gated("agents.invoke", async (params) => {
       return services.agents.invoke(params);
+    }),
+    "agents.wakeup": gated("agents.wakeup", async (params) => {
+      return services.agents.wakeup(params);
+    }),
+    "agents.resetRuntimeSession": gated("agents.resetRuntimeSession", async (params) => {
+      return services.agents.resetRuntimeSession(params);
     }),
 
     // Agent Sessions

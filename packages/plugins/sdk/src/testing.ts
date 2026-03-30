@@ -469,6 +469,15 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         const agent = agents.get(agentId);
         return isInCompany(agent, companyId) ? agent : null;
       },
+      async update(agentId, patch, companyId) {
+        requireCapability(manifest, capabilitySet, "agents.update");
+        const cid = requireCompanyId(companyId);
+        const agent = agents.get(agentId);
+        if (!isInCompany(agent, cid)) throw new Error(`Agent not found: ${agentId}`);
+        const updated: Agent = { ...agent!, ...patch, updatedAt: new Date() } as Agent;
+        agents.set(agentId, updated);
+        return updated;
+      },
       async pause(agentId, companyId) {
         requireCapability(manifest, capabilitySet, "agents.pause");
         const cid = requireCompanyId(companyId);
@@ -503,6 +512,46 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           throw new Error(`Agent is not invokable in its current state: ${agent!.status}`);
         }
         return { runId: randomUUID() };
+      },
+      async wakeup(agentId, companyId, opts) {
+        requireCapability(manifest, capabilitySet, "agents.invoke");
+        const cid = requireCompanyId(companyId);
+        const agent = agents.get(agentId);
+        if (!isInCompany(agent, cid)) throw new Error(`Agent not found: ${agentId}`);
+        if (
+          agent!.status === "paused" ||
+          agent!.status === "terminated" ||
+          agent!.status === "pending_approval"
+        ) {
+          throw new Error(`Agent is not invokable in its current state: ${agent!.status}`);
+        }
+        void opts;
+        return { runId: randomUUID() };
+      },
+      async resetRuntimeSession(agentId, companyId, _opts) {
+        requireCapability(manifest, capabilitySet, "agents.runtime.write");
+        const cid = requireCompanyId(companyId);
+        const agent = agents.get(agentId);
+        if (!isInCompany(agent, cid)) throw new Error(`Agent not found: ${agentId}`);
+        return {
+          agentId,
+          companyId: cid,
+          adapterType: agent!.adapterType,
+          sessionId: null,
+          sessionDisplayId: null,
+          sessionParamsJson: null,
+          stateJson: {},
+          lastRunId: null,
+          lastRunStatus: null,
+          totalInputTokens: 0,
+          totalOutputTokens: 0,
+          totalCachedInputTokens: 0,
+          totalCostCents: 0,
+          lastError: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          clearedTaskSessions: 0,
+        };
       },
       sessions: {
         async create(agentId, companyId, opts) {

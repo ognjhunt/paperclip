@@ -654,6 +654,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           return callHost("agents.get", { agentId, companyId });
         },
 
+        async update(agentId: string, patch, companyId: string) {
+          return callHost("agents.update", { agentId, patch, companyId });
+        },
+
         async pause(agentId: string, companyId: string) {
           return callHost("agents.pause", { agentId, companyId });
         },
@@ -664,6 +668,27 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
         async invoke(agentId: string, companyId: string, opts: { prompt: string; reason?: string }) {
           return callHost("agents.invoke", { agentId, companyId, prompt: opts.prompt, reason: opts.reason });
+        },
+
+        async wakeup(agentId: string, companyId: string, opts) {
+          return callHost("agents.wakeup", {
+            agentId,
+            companyId,
+            source: opts?.source,
+            triggerDetail: opts?.triggerDetail,
+            reason: opts?.reason,
+            payload: opts?.payload,
+            idempotencyKey: opts?.idempotencyKey,
+            forceFreshSession: opts?.forceFreshSession,
+          });
+        },
+
+        async resetRuntimeSession(agentId: string, companyId: string, opts) {
+          return callHost("agents.resetRuntimeSession", {
+            agentId,
+            companyId,
+            taskKey: opts?.taskKey ?? null,
+          });
         },
 
         sessions: {

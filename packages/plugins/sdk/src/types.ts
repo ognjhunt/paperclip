@@ -900,12 +900,33 @@ export interface PluginIssuesClient {
 export interface PluginAgentsClient {
   list(input: { companyId: string; status?: Agent["status"]; limit?: number; offset?: number }): Promise<Agent[]>;
   get(agentId: string, companyId: string): Promise<Agent | null>;
+  /** Update mutable agent fields such as adapter configuration. Requires `agents.update`. */
+  update(agentId: string, patch: Record<string, unknown>, companyId: string): Promise<Agent>;
   /** Pause an agent. Throws if agent is terminated or not found. Requires `agents.pause`. */
   pause(agentId: string, companyId: string): Promise<Agent>;
   /** Resume a paused agent (sets status to idle). Throws if terminated, pending_approval, or not found. Requires `agents.resume`. */
   resume(agentId: string, companyId: string): Promise<Agent>;
   /** Invoke (wake up) an agent with a prompt payload. Throws if paused, terminated, pending_approval, or not found. Requires `agents.invoke`. */
   invoke(agentId: string, companyId: string, opts: { prompt: string; reason?: string }): Promise<{ runId: string }>;
+  /** Wake up an agent with structured payload and heartbeat options. Requires `agents.invoke`. */
+  wakeup(agentId: string, companyId: string, opts: {
+    source?: "automation" | "on_demand" | "assignment" | "timer";
+    triggerDetail?: string;
+    reason?: string | null;
+    payload?: Record<string, unknown> | null;
+    idempotencyKey?: string | null;
+    forceFreshSession?: boolean;
+  }): Promise<{ runId: string }>;
+  /** Clear stored runtime/session state for an agent. Requires `agents.runtime.write`. */
+  resetRuntimeSession(
+    agentId: string,
+    companyId: string,
+    opts?: { taskKey?: string | null },
+  ): Promise<import("@paperclipai/shared").AgentRuntimeState & {
+    sessionDisplayId?: string | null;
+    sessionParamsJson?: Record<string, unknown> | null;
+    clearedTaskSessions?: number;
+  } | null>;
   /** Create, message, and close agent chat sessions. Requires `agent.sessions.*` capabilities. */
   sessions: PluginAgentSessionsClient;
 }

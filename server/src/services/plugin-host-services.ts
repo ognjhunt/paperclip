@@ -882,6 +882,15 @@ export function buildHostServices(
         const agent = await agents.getById(params.agentId);
         return (inCompany(agent, companyId) ? agent : null) as Agent | null;
       },
+      async update(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const agent = await agents.getById(params.agentId);
+        requireInCompany("Agent", agent, companyId);
+        const updated = await agents.update(params.agentId, params.patch as Record<string, unknown>);
+        if (!updated) throw new Error(`Agent not found: ${params.agentId}`);
+        return updated as Agent;
+      },
       async pause(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
@@ -911,6 +920,37 @@ export function buildHostServices(
         });
         if (!run) throw new Error("Agent wakeup was skipped by heartbeat policy");
         return { runId: run.id };
+      },
+      async wakeup(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const agent = await agents.getById(params.agentId);
+        requireInCompany("Agent", agent, companyId);
+        const run = await heartbeat.wakeup(params.agentId, {
+          source: params.source ?? "automation",
+          triggerDetail: (params.triggerDetail as "manual" | "system" | "ping" | "callback" | undefined) ?? "system",
+          reason: params.reason ?? null,
+          payload: params.payload ?? null,
+          idempotencyKey: params.idempotencyKey ?? null,
+          requestedByActorType: "system",
+          requestedByActorId: pluginId,
+          contextSnapshot: {
+            triggeredBy: "system",
+            actorId: pluginId,
+            forceFreshSession: params.forceFreshSession === true,
+          },
+        });
+        if (!run) throw new Error("Agent wakeup was skipped by heartbeat policy");
+        return { runId: run.id };
+      },
+      async resetRuntimeSession(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const agent = await agents.getById(params.agentId);
+        requireInCompany("Agent", agent, companyId);
+        return await heartbeat.resetRuntimeSession(params.agentId, {
+          taskKey: params.taskKey ?? null,
+        });
       },
     },
 

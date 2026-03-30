@@ -66,6 +66,11 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
   "issues.create": ["issues.create"],
   "issues.update": ["issues.update"],
   "issue.comments.create": ["issue.comments.create"],
+  "agents.update": ["agents.update"],
+  "agents.pause": ["agents.pause"],
+  "agents.resume": ["agents.resume"],
+  "agents.invoke": ["agents.invoke"],
+  "agents.resetRuntimeSession": ["agents.runtime.write"],
   "activity.log": ["activity.log.write"],
   "metrics.write": ["metrics.write"],
 
