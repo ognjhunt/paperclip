@@ -1,4 +1,5 @@
 import type { IssueOriginKind, IssuePriority, IssueStatus } from "../constants.js";
+import type { IssueExecutionOverrides } from "./execution-policy.js";
 import type { Goal } from "./goal.js";
 import type { Project, ProjectWorkspace } from "./project.js";
 import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
@@ -48,6 +49,7 @@ export interface IssueLabel {
 
 export interface IssueAssigneeAdapterOverrides {
   adapterConfig?: Record<string, unknown>;
+  executionOverrides?: IssueExecutionOverrides;
   useProjectWorkspace?: boolean;
 }
 

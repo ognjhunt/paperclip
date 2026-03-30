@@ -32,6 +32,7 @@ type AgentLike = {
   companyId: string;
   name: string;
   adapterConfig: unknown;
+  runtimeConfig?: unknown;
 };
 
 type AgentInstructionsFileSummary = {
@@ -79,6 +80,16 @@ type BundleState = {
 function asRecord(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
   return value as Record<string, unknown>;
+}
+
+function getEffectiveExecutionConfig(agent: AgentLike): Record<string, unknown> {
+  const adapterConfig = asRecord(agent.adapterConfig);
+  const runtimeConfig = asRecord(agent.runtimeConfig);
+  const executionProfile = asRecord(runtimeConfig.executionProfile);
+  return {
+    ...executionProfile,
+    ...adapterConfig,
+  };
 }
 
 function asString(value: unknown): string | null {
@@ -223,7 +234,7 @@ async function readLegacyInstructions(agent: AgentLike, config: Record<string, u
 }
 
 function deriveBundleState(agent: AgentLike): BundleState {
-  const config = asRecord(agent.adapterConfig);
+  const config = getEffectiveExecutionConfig(agent);
   const warnings: string[] = [];
   const storedModeRaw = config[MODE_KEY];
   const storedRootRaw = asString(config[ROOT_KEY]);
@@ -441,7 +452,10 @@ export function syncInstructionsBundleConfigFromFilePath(
     delete next[ENTRY_KEY];
     return next;
   }
-  const resolvedPath = resolveLegacyInstructionsPath(instructionsFilePath, adapterConfig);
+  const resolvedPath = resolveLegacyInstructionsPath(
+    instructionsFilePath,
+    getEffectiveExecutionConfig({ ...agent, adapterConfig }),
+  );
   const rootPath = path.dirname(resolvedPath);
   const entryFile = path.basename(resolvedPath);
   const mode: BundleMode = resolvedPath.startsWith(`${resolveManagedInstructionsRoot(agent)}${path.sep}`)

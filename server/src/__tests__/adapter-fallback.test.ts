@@ -1,0 +1,263 @@
+import { describe, expect, it, vi } from "vitest";
+import {
+  buildExecutionConfigForAdapter,
+  getQuotaBlockReason,
+  resolveHeartbeatAdapterExecution,
+  synthesizeExecutionRuntimeConfig,
+} from "../services/adapter-fallback.ts";
+
+describe("adapter fallback quota helpers", () => {
+  it("treats a fully used future-reset window as blocked", () => {
+    const reason = getQuotaBlockReason(
+      {
+        provider: "anthropic",
+        ok: true,
+        windows: [
+          {
+            label: "Current week (Sonnet only)",
+            usedPercent: 100,
+            resetsAt: "2026-03-31T18:00:00.000Z",
+            valueLabel: null,
+            detail: null,
+          },
+        ],
+      },
+      new Date("2026-03-30T18:00:00.000Z"),
+    );
+
+    expect(reason).toContain("Current week (Sonnet only)");
+    expect(reason).toContain("2026-03-31T18:00:00.000Z");
+  });
+
+  it("ignores fully used windows that already reset", () => {
+    const reason = getQuotaBlockReason(
+      {
+        provider: "anthropic",
+        ok: true,
+        windows: [
+          {
+            label: "Current week (Sonnet only)",
+            usedPercent: 100,
+            resetsAt: "2026-03-29T18:00:00.000Z",
+            valueLabel: null,
+            detail: null,
+          },
+        ],
+      },
+      new Date("2026-03-30T18:00:00.000Z"),
+    );
+
+    expect(reason).toBeNull();
+  });
+});
+
+describe("execution policy synthesis", () => {
+  it("synthesizes a provider-neutral execution profile and policy for local model adapters", () => {
+    const runtimeConfig = synthesizeExecutionRuntimeConfig({
+      adapterType: "claude_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        instructionsFilePath: "/tmp/project/AGENTS.md",
+        promptTemplate: "Continue your Paperclip work.",
+        timeoutSec: 1200,
+        env: { PAPERCLIP_FOO: "bar" },
+      },
+      runtimeConfig: {},
+    });
+
+    expect(runtimeConfig).toMatchObject({
+      executionProfile: {
+        cwd: "/tmp/project",
+        instructionsFilePath: "/tmp/project/AGENTS.md",
+        promptTemplate: "Continue your Paperclip work.",
+        timeoutSec: 1200,
+        env: { PAPERCLIP_FOO: "bar" },
+      },
+      executionPolicy: {
+        mode: "prefer_available",
+        compatibleAdapterTypes: expect.arrayContaining(["claude_local", "codex_local"]),
+        preferredAdapterTypes: expect.arrayContaining(["claude_local", "codex_local"]),
+      },
+    });
+  });
+});
+
+describe("buildExecutionConfigForAdapter", () => {
+  it("maps provider-neutral issue overrides into the selected adapter config", () => {
+    const config = buildExecutionConfigForAdapter({
+      agentAdapterType: "claude_local",
+      executionAdapterType: "codex_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        promptTemplate: "Continue your Paperclip work.",
+      },
+      runtimeConfig: {
+        executionProfile: {
+          instructionsFilePath: "/tmp/project/AGENTS.md",
+        },
+      },
+      issueExecutionOverrides: {
+        model: "gpt-5.3-codex",
+        reasoningEffort: "high",
+        perAdapterConfig: {
+          codex_local: {
+            search: true,
+          },
+        },
+      },
+    });
+
+    expect(config).toEqual({
+      cwd: "/tmp/project",
+      promptTemplate: "Continue your Paperclip work.",
+      instructionsFilePath: "/tmp/project/AGENTS.md",
+      model: "gpt-5.3-codex",
+      modelReasoningEffort: "high",
+      search: true,
+    });
+  });
+});
+
+describe("resolveHeartbeatAdapterExecution", () => {
+  it("keeps fixed adapters on their configured runtime when available", async () => {
+    const result = await resolveHeartbeatAdapterExecution({
+      companyId: "company-1",
+      primaryAdapterType: "process",
+      adapterConfig: { command: "bash" },
+      runtimeConfig: {},
+      getQuotaWindows: vi.fn(async () => null),
+      testEnvironment: vi.fn(async () => ({
+        adapterType: "process",
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      })),
+    });
+
+    expect(result.action).toBe("run");
+    if (result.action !== "run") {
+      throw new Error("expected run action");
+    }
+    expect(result.adapterType).toBe("process");
+    expect(result.config.command).toBe("bash");
+  });
+
+  it("switches to Codex when the primary Claude adapter is quota-blocked", async () => {
+    const getQuotaWindows = vi.fn(async (adapterType: string) => {
+      if (adapterType === "claude_local") {
+        return {
+          provider: "anthropic",
+          ok: true,
+          windows: [
+            {
+              label: "Current week (Sonnet only)",
+              usedPercent: 100,
+              resetsAt: "2026-03-31T18:00:00.000Z",
+              valueLabel: null,
+              detail: null,
+            },
+          ],
+        };
+      }
+      if (adapterType === "codex_local") {
+        return {
+          provider: "openai",
+          ok: true,
+          windows: [
+            {
+              label: "5h",
+              usedPercent: 12,
+              resetsAt: "2026-03-30T20:00:00.000Z",
+              valueLabel: null,
+              detail: null,
+            },
+          ],
+        };
+      }
+      return null;
+    });
+
+    const result = await resolveHeartbeatAdapterExecution({
+      companyId: "company-1",
+      primaryAdapterType: "claude_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        promptTemplate: "Continue your Paperclip work.",
+        instructionsFilePath: "/tmp/project/AGENTS.md",
+      },
+      runtimeConfig: {},
+      issueExecutionOverrides: {
+        reasoningEffort: "high",
+      },
+      getQuotaWindows,
+      testEnvironment: vi.fn(async () => null),
+      now: new Date("2026-03-30T18:00:00.000Z"),
+    });
+
+    expect(result.action).toBe("run");
+    if (result.action !== "run") {
+      throw new Error("expected run action");
+    }
+    expect(result.adapterType).toBe("codex_local");
+    expect(result.config).toMatchObject({
+      cwd: "/tmp/project",
+      promptTemplate: "Continue your Paperclip work.",
+      instructionsFilePath: "/tmp/project/AGENTS.md",
+      modelReasoningEffort: "high",
+    });
+    expect(result.diagnostics[0]).toEqual({
+      adapterType: "claude_local",
+      available: false,
+      reason: "Current week (Sonnet only) exhausted until 2026-03-31T18:00:00.000Z",
+    });
+  });
+
+  it("blocks the run when no compatible adapter is available", async () => {
+    const getQuotaWindows = vi.fn(async (adapterType: string) => {
+      if (adapterType === "claude_local") {
+        return {
+          provider: "anthropic",
+          ok: false,
+          error: "no local claude auth token",
+          windows: [],
+        };
+      }
+      if (adapterType === "codex_local") {
+        return {
+          provider: "openai",
+          ok: false,
+          error: "no local codex auth token",
+          windows: [],
+        };
+      }
+      return null;
+    });
+
+    const result = await resolveHeartbeatAdapterExecution({
+      companyId: "company-1",
+      primaryAdapterType: "claude_local",
+      adapterConfig: { cwd: "/tmp/project" },
+      runtimeConfig: {},
+      getQuotaWindows,
+      testEnvironment: vi.fn(async () => ({
+        adapterType: "claude_local",
+        status: "fail",
+        checks: [
+          {
+            code: "auth_required",
+            level: "error",
+            message: "login is required",
+          },
+        ],
+        testedAt: new Date().toISOString(),
+      })),
+      now: new Date("2026-03-30T18:00:00.000Z"),
+    });
+
+    expect(result.action).toBe("block");
+    if (result.action !== "block") {
+      throw new Error("expected block action");
+    }
+    expect(result.reason).toContain("claude_local");
+  });
+});

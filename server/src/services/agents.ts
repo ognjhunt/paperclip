@@ -16,6 +16,7 @@ import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
+import { synthesizeExecutionRuntimeConfig } from "./adapter-fallback.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -335,6 +336,30 @@ export function agentService(db: Db) {
       const role = (data.role ?? existing.role) as string;
       normalizedPatch.permissions = normalizeAgentPermissions(data.permissions, role);
     }
+    if (data.adapterType !== undefined || data.adapterConfig !== undefined || data.runtimeConfig !== undefined) {
+      const nextAdapterType = (data.adapterType ?? existing.adapterType) as string;
+      const nextAdapterConfig = isPlainRecord(data.adapterConfig)
+        ? data.adapterConfig
+        : isPlainRecord(existing.adapterConfig)
+          ? existing.adapterConfig
+          : {};
+      const nextRuntimeConfig = isPlainRecord(data.runtimeConfig)
+        ? data.runtimeConfig
+        : isPlainRecord(existing.runtimeConfig)
+          ? existing.runtimeConfig
+          : {};
+      if (data.runtimeConfig === undefined && (data.adapterType !== undefined || data.adapterConfig !== undefined)) {
+        delete nextRuntimeConfig.executionProfile;
+        if (data.adapterType !== undefined) {
+          delete nextRuntimeConfig.executionPolicy;
+        }
+      }
+      normalizedPatch.runtimeConfig = synthesizeExecutionRuntimeConfig({
+        adapterType: nextAdapterType,
+        adapterConfig: nextAdapterConfig,
+        runtimeConfig: nextRuntimeConfig,
+      });
+    }
 
     const shouldRecordRevision = Boolean(options?.recordRevision) && hasConfigPatchFields(normalizedPatch);
     const beforeConfig = shouldRecordRevision ? buildConfigSnapshot(existing) : null;
@@ -394,9 +419,23 @@ export function agentService(db: Db) {
 
       const role = data.role ?? "general";
       const normalizedPermissions = normalizeAgentPermissions(data.permissions, role);
+      const adapterType = (data.adapterType ?? "process") as string;
+      const adapterConfig = isPlainRecord(data.adapterConfig) ? data.adapterConfig : {};
+      const runtimeConfig = isPlainRecord(data.runtimeConfig) ? data.runtimeConfig : {};
       const created = await db
         .insert(agents)
-        .values({ ...data, name: uniqueName, companyId, role, permissions: normalizedPermissions })
+        .values({
+          ...data,
+          name: uniqueName,
+          companyId,
+          role,
+          permissions: normalizedPermissions,
+          runtimeConfig: synthesizeExecutionRuntimeConfig({
+            adapterType,
+            adapterConfig,
+            runtimeConfig,
+          }),
+        })
         .returning()
         .then((rows) => rows[0]);
 

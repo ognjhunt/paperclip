@@ -20,9 +20,20 @@ export const issueExecutionWorkspaceSettingsSchema = z
   })
   .strict();
 
+const issueExecutionOverridesSchema = z
+  .object({
+    model: z.string().trim().min(1).optional(),
+    reasoningEffort: z.string().trim().min(1).optional(),
+    chrome: z.boolean().optional(),
+    search: z.boolean().optional(),
+    perAdapterConfig: z.record(z.string().min(1), z.record(z.unknown())).optional(),
+  })
+  .strict();
+
 export const issueAssigneeAdapterOverridesSchema = z
   .object({
     adapterConfig: z.record(z.unknown()).optional(),
+    executionOverrides: issueExecutionOverridesSchema.optional(),
     useProjectWorkspace: z.boolean().optional(),
   })
   .strict();

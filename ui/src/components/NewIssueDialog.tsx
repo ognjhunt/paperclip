@@ -121,26 +121,18 @@ function buildAssigneeAdapterOverrides(input: {
     return null;
   }
 
-  const adapterConfig: Record<string, unknown> = {};
-  if (input.modelOverride) adapterConfig.model = input.modelOverride;
+  const executionOverrides: Record<string, unknown> = {};
+  if (input.modelOverride) executionOverrides.model = input.modelOverride;
   if (input.thinkingEffortOverride) {
-    if (adapterType === "codex_local") {
-      adapterConfig.modelReasoningEffort = input.thinkingEffortOverride;
-    } else if (adapterType === "opencode_local") {
-      adapterConfig.variant = input.thinkingEffortOverride;
-    } else if (adapterType === "claude_local") {
-      adapterConfig.effort = input.thinkingEffortOverride;
-    } else if (adapterType === "opencode_local") {
-      adapterConfig.variant = input.thinkingEffortOverride;
-    }
+    executionOverrides.reasoningEffort = input.thinkingEffortOverride;
   }
   if (adapterType === "claude_local" && input.chrome) {
-    adapterConfig.chrome = true;
+    executionOverrides.chrome = true;
   }
 
   const overrides: Record<string, unknown> = {};
-  if (Object.keys(adapterConfig).length > 0) {
-    overrides.adapterConfig = adapterConfig;
+  if (Object.keys(executionOverrides).length > 0) {
+    overrides.executionOverrides = executionOverrides;
   }
   return Object.keys(overrides).length > 0 ? overrides : null;
 }

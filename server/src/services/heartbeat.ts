@@ -4,7 +4,7 @@ import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import type { BillingType } from "@paperclipai/shared";
+import type { BillingType, IssueExecutionOverrides } from "@paperclipai/shared";
 import {
   agents,
   agentRuntimeState,
@@ -58,6 +58,10 @@ import {
   resolveSessionCompactionPolicy,
   type SessionCompactionPolicy,
 } from "@paperclipai/adapter-utils";
+import {
+  resolveHeartbeatAdapterExecution,
+  synthesizeExecutionRuntimeConfig,
+} from "./adapter-fallback.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -265,6 +269,7 @@ type SessionCompactionDecision = {
 
 interface ParsedIssueAssigneeAdapterOverrides {
   adapterConfig: Record<string, unknown> | null;
+  executionOverrides: IssueExecutionOverrides | null;
   useProjectWorkspace: boolean | null;
 }
 
@@ -550,13 +555,18 @@ function parseIssueAssigneeAdapterOverrides(
   const parsedAdapterConfig = parseObject(parsed.adapterConfig);
   const adapterConfig =
     Object.keys(parsedAdapterConfig).length > 0 ? parsedAdapterConfig : null;
+  const parsedExecutionOverrides = parseObject(parsed.executionOverrides);
+  const executionOverrides = Object.keys(parsedExecutionOverrides).length > 0
+    ? (parsedExecutionOverrides as IssueExecutionOverrides)
+    : null;
   const useProjectWorkspace =
     typeof parsed.useProjectWorkspace === "boolean"
       ? parsed.useProjectWorkspace
       : null;
-  if (!adapterConfig && useProjectWorkspace === null) return null;
+  if (!adapterConfig && !executionOverrides && useProjectWorkspace === null) return null;
   return {
     adapterConfig,
+    executionOverrides,
     useProjectWorkspace,
   };
 }
@@ -1880,6 +1890,7 @@ export function heartbeatService(db: Db) {
 
   async function updateRuntimeState(
     agent: typeof agents.$inferSelect,
+    executionAdapterType: string,
     run: typeof heartbeatRuns.$inferSelect,
     result: AdapterExecutionResult,
     session: { legacySessionId: string | null },
@@ -1900,7 +1911,7 @@ export function heartbeatService(db: Db) {
     await db
       .update(agentRuntimeState)
       .set({
-        adapterType: agent.adapterType,
+        adapterType: executionAdapterType,
         sessionId: session.legacySessionId,
         lastRunId: run.id,
         lastRunStatus: run.status,
@@ -2002,10 +2013,9 @@ export function heartbeatService(db: Db) {
       return;
     }
 
-    const runtime = await ensureRuntimeState(agent);
+    const runtimeState = await ensureRuntimeState(agent);
     const context = parseObject(run.contextSnapshot);
     const taskKey = deriveTaskKey(context, null);
-    const sessionCodec = getAdapterSessionCodec(agent.adapterType);
     const issueId = readNonEmptyString(context.issueId);
     const issueContext = issueId
       ? await db
@@ -2047,9 +2057,48 @@ export function heartbeatService(db: Db) {
               parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy),
               isolatedWorkspacesEnabled,
             ))
-      : null;
+          : null;
+    const adapterConfig = parseObject(agent.adapterConfig);
+    const normalizedRuntimeConfig = synthesizeExecutionRuntimeConfig({
+      adapterType: agent.adapterType,
+      adapterConfig,
+      runtimeConfig: parseObject(agent.runtimeConfig),
+    });
+    const selectedExecution = await resolveHeartbeatAdapterExecution({
+      companyId: agent.companyId,
+      primaryAdapterType: agent.adapterType,
+      adapterConfig,
+      runtimeConfig: normalizedRuntimeConfig,
+      issueAdapterConfigOverride: issueAssigneeOverrides?.adapterConfig ?? null,
+      issueExecutionOverrides: issueAssigneeOverrides?.executionOverrides ?? null,
+      getQuotaWindows: async (adapterType) => {
+        const adapter = getServerAdapter(adapterType);
+        if (!adapter.getQuotaWindows) return null;
+        return adapter.getQuotaWindows();
+      },
+      testEnvironment: async (adapterType, candidateConfig) => {
+        const adapter = getServerAdapter(adapterType);
+        if (!adapter.testEnvironment) return null;
+        const { config: resolvedCandidateConfig } = await secretsSvc.resolveAdapterConfigForRuntime(
+          agent.companyId,
+          candidateConfig,
+        );
+        return adapter.testEnvironment({
+          companyId: agent.companyId,
+          adapterType,
+          config: resolvedCandidateConfig,
+        });
+      },
+    });
+    if (selectedExecution.action === "block") {
+      throw new Error(`No execution adapter available: ${selectedExecution.reason}`);
+    }
+    const executionAdapterType = selectedExecution.adapterType;
+    const executionAdapterConfig = selectedExecution.config;
+    const executionSelectionReason = selectedExecution.reason;
+    const sessionCodec = getAdapterSessionCodec(executionAdapterType);
     const taskSession = taskKey
-      ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)
+      ? await getTaskSession(agent.companyId, agent.id, executionAdapterType, taskKey)
       : null;
     const resetTaskSession = shouldResetTaskSessionForWake(context);
     const sessionResetReason = describeSessionResetReason(context);
@@ -2066,7 +2115,6 @@ export function heartbeatService(db: Db) {
       explicitResumeSessionParams ??
       (explicitResumeSessionDisplayId ? { sessionId: explicitResumeSessionDisplayId } : null) ??
       normalizeSessionParams(sessionCodec.deserialize(taskSessionForRun?.sessionParamsJson ?? null));
-    const config = parseObject(agent.adapterConfig);
     const executionWorkspaceMode = resolveExecutionWorkspaceMode({
       projectPolicy: projectExecutionWorkspacePolicy,
       issueSettings: issueExecutionWorkspaceSettings,
@@ -2079,18 +2127,15 @@ export function heartbeatService(db: Db) {
       { useProjectWorkspace: executionWorkspaceMode !== "agent_default" },
     );
     const workspaceManagedConfig = buildExecutionWorkspaceAdapterConfig({
-      agentConfig: config,
+      agentConfig: executionAdapterConfig,
       projectPolicy: projectExecutionWorkspacePolicy,
       issueSettings: issueExecutionWorkspaceSettings,
       mode: executionWorkspaceMode,
       legacyUseProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
     });
-    const mergedConfig = issueAssigneeOverrides?.adapterConfig
-      ? { ...workspaceManagedConfig, ...issueAssigneeOverrides.adapterConfig }
-      : workspaceManagedConfig;
     const { config: resolvedConfig, secretKeys } = await secretsSvc.resolveAdapterConfigForRuntime(
       agent.companyId,
-      mergedConfig,
+      workspaceManagedConfig,
     );
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId);
     const runtimeConfig = {
@@ -2330,7 +2375,7 @@ export function heartbeatService(db: Db) {
     if (executionWorkspace.projectId && !readNonEmptyString(context.projectId)) {
       context.projectId = executionWorkspace.projectId;
     }
-    const runtimeSessionFallback = taskKey || resetTaskSession ? null : runtime.sessionId;
+    const runtimeSessionFallback = taskKey || resetTaskSession ? null : runtimeState.sessionId;
     let previousSessionDisplayId = truncateDisplayId(
       explicitResumeSessionDisplayId ??
         taskSessionForRun?.sessionDisplayId ??
@@ -2534,9 +2579,26 @@ export function heartbeatService(db: Db) {
         });
       };
 
-      const adapter = getServerAdapter(agent.adapterType);
+      if (executionSelectionReason) {
+        await onLog("stdout", `[paperclip] ${executionSelectionReason}\n`);
+      }
+      if (executionAdapterType !== agent.adapterType) {
+        await appendRunEvent(currentRun, seq++, {
+          eventType: "adapter.invoke",
+          stream: "system",
+          level: "info",
+          message: "adapter preflight fallback",
+          payload: {
+            configuredAdapterType: agent.adapterType,
+            executionAdapterType,
+            reason: executionSelectionReason,
+          },
+        });
+      }
+
+      const adapter = getServerAdapter(executionAdapterType);
       const authToken = adapter.supportsLocalAgentJwt
-        ? createLocalAgentJwt(agent.id, agent.companyId, agent.adapterType, run.id)
+        ? createLocalAgentJwt(agent.id, agent.companyId, executionAdapterType, run.id)
         : null;
       if (adapter.supportsLocalAgentJwt && !authToken) {
         logger.warn(
@@ -2544,7 +2606,7 @@ export function heartbeatService(db: Db) {
             companyId: agent.companyId,
             agentId: agent.id,
             runId: run.id,
-            adapterType: agent.adapterType,
+            adapterType: executionAdapterType,
           },
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
@@ -2553,7 +2615,7 @@ export function heartbeatService(db: Db) {
         runId: run.id,
         agent,
         runtime: runtimeForAdapter,
-        config: runtimeConfig,
+        config: resolvedConfig,
         context,
         onLog,
         onMeta: onAdapterMeta,
@@ -2565,7 +2627,7 @@ export function heartbeatService(db: Db) {
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({
             db,
-            adapterType: agent.adapterType,
+            adapterType: executionAdapterType,
             runId: run.id,
             agent: {
               id: agent.id,
@@ -2728,20 +2790,20 @@ export function heartbeatService(db: Db) {
       }
 
       if (finalizedRun) {
-        await updateRuntimeState(agent, finalizedRun, adapterResult, {
+        await updateRuntimeState(agent, executionAdapterType, finalizedRun, adapterResult, {
           legacySessionId: nextSessionState.legacySessionId,
         }, normalizedUsage);
         if (taskKey) {
           if (adapterResult.clearSession || (!nextSessionState.params && !nextSessionState.displayId)) {
             await clearTaskSessions(agent.companyId, agent.id, {
               taskKey,
-              adapterType: agent.adapterType,
+              adapterType: executionAdapterType,
             });
           } else {
             await upsertTaskSession({
               companyId: agent.companyId,
               agentId: agent.id,
-              adapterType: agent.adapterType,
+              adapterType: executionAdapterType,
               taskKey,
               sessionParamsJson: nextSessionState.params,
               sessionDisplayId: nextSessionState.displayId,
@@ -2757,7 +2819,7 @@ export function heartbeatService(db: Db) {
           await logAgentRunFailureActivity(db, {
             companyId: finalizedRun.companyId,
             agentId: agent.id,
-            agentAdapterType: agent.adapterType,
+            agentAdapterType: executionAdapterType,
             runId: finalizedRun.id,
             invocationSource: finalizedRun.invocationSource,
             triggerDetail: finalizedRun.triggerDetail,
@@ -2811,7 +2873,7 @@ export function heartbeatService(db: Db) {
         });
         await releaseIssueExecutionAndPromote(failedRun);
 
-        await updateRuntimeState(agent, failedRun, {
+        await updateRuntimeState(agent, executionAdapterType, failedRun, {
           exitCode: null,
           signal: null,
           timedOut: false,
@@ -2824,7 +2886,7 @@ export function heartbeatService(db: Db) {
           await upsertTaskSession({
             companyId: agent.companyId,
             agentId: agent.id,
-            adapterType: agent.adapterType,
+            adapterType: executionAdapterType,
             taskKey,
             sessionParamsJson: previousSessionParams,
             sessionDisplayId: previousSessionDisplayId,
@@ -2836,7 +2898,7 @@ export function heartbeatService(db: Db) {
           await logAgentRunFailureActivity(db, {
             companyId: failedRun.companyId,
             agentId: agent.id,
-            agentAdapterType: agent.adapterType,
+            agentAdapterType: executionAdapterType,
             runId: failedRun.id,
             invocationSource: failedRun.invocationSource,
             triggerDetail: failedRun.triggerDetail,
@@ -3795,7 +3857,7 @@ export function heartbeatService(db: Db) {
       const clearedTaskSessions = await clearTaskSessions(
         agent.companyId,
         agent.id,
-        taskKey ? { taskKey, adapterType: agent.adapterType } : undefined,
+        taskKey ? { taskKey } : undefined,
       );
       const runtimePatch: Partial<typeof agentRuntimeState.$inferInsert> = {
         sessionId: null,
