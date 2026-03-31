@@ -20,6 +20,8 @@ import {
   removeMaintainerOnlySkillSymlinks,
   parseObject,
   redactEnvForLogs,
+  redactSensitiveOutputText,
+  redactSensitiveOutputValue,
   renderTemplate,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -352,7 +354,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timeoutSec,
       graceSec,
       onSpawn,
-      onLog,
+      onLog: async (stream, chunk) => {
+        await onLog(stream, redactSensitiveOutputText(chunk));
+      },
     });
     return {
       proc,
@@ -432,10 +436,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       model,
       billingType,
       costUsd: attempt.parsed.costUsd,
-      resultJson: attempt.parsed.resultEvent ?? {
-        stdout: attempt.proc.stdout,
-        stderr: attempt.proc.stderr,
-      },
+      resultJson: redactSensitiveOutputValue(
+        attempt.parsed.resultEvent ?? {
+          stdout: attempt.proc.stdout,
+          stderr: attempt.proc.stderr,
+        },
+      ),
       summary: attempt.parsed.summary,
       question: attempt.parsed.question,
       clearSession: clearSessionForTurnLimit || Boolean(clearSessionOnMissingSession && !resolvedSessionId),

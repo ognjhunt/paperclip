@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  CURRENT_SECRET_REDACTION_TOKEN,
   maskUserNameForLogs,
   redactCurrentUserText,
   redactCurrentUserValue,
@@ -70,5 +71,58 @@ describe("log redaction", () => {
   it("skips redaction when disabled", () => {
     const input = "cwd=/Users/paperclipuser/paperclip";
     expect(redactCurrentUserText(input, { enabled: false })).toBe(input);
+  });
+
+  it("redacts secret-shaped env assignments and bearer headers in text logs", () => {
+    const input = [
+      "PAPERCLIP_API_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.signature",
+      "PAPERCLIP_AGENT_JWT_SECRET=super-secret-value",
+      "Authorization: Bearer sk-test-123456",
+      "PAPERCLIP_TASK_ID=task-123",
+    ].join("\n");
+
+    const result = redactCurrentUserText(input, {
+      userNames: [],
+      homeDirs: [],
+    });
+
+    expect(result).toContain(`PAPERCLIP_API_KEY=${CURRENT_SECRET_REDACTION_TOKEN}`);
+    expect(result).toContain(`PAPERCLIP_AGENT_JWT_SECRET=${CURRENT_SECRET_REDACTION_TOKEN}`);
+    expect(result).toContain(`Authorization: Bearer ${CURRENT_SECRET_REDACTION_TOKEN}`);
+    expect(result).toContain("PAPERCLIP_TASK_ID=task-123");
+    expect(result).not.toContain("payload.signature");
+    expect(result).not.toContain("super-secret-value");
+    expect(result).not.toContain("sk-test-123456");
+  });
+
+  it("redacts secret-shaped keys in structured payloads", () => {
+    const result = redactCurrentUserValue({
+      env: {
+        PAPERCLIP_API_KEY: "jwt-token",
+        PAPERCLIP_TASK_ID: "task-123",
+      },
+      headers: {
+        Authorization: "Bearer sk-live-secret",
+      },
+      nested: {
+        authToken: "nested-secret",
+      },
+    }, {
+      userNames: [],
+      homeDirs: [],
+    });
+
+    expect(result).toEqual({
+      env: {
+        PAPERCLIP_API_KEY: CURRENT_SECRET_REDACTION_TOKEN,
+        PAPERCLIP_TASK_ID: "task-123",
+      },
+      headers: {
+        Authorization: CURRENT_SECRET_REDACTION_TOKEN,
+      },
+      nested: {
+        authToken: CURRENT_SECRET_REDACTION_TOKEN,
+      },
+    });
   });
 });

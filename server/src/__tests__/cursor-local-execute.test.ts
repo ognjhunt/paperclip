@@ -4,7 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { execute } from "@paperclipai/adapter-cursor-local/server";
 
-async function writeFakeCursorCommand(commandPath: string): Promise<void> {
+async function writeFakeCursorCommand(commandPath: string, options: { extraStdoutLines?: string[] } = {}): Promise<void> {
+  const extraStdout = (options.extraStdoutLines ?? [])
+    .map((line) => `console.log(${JSON.stringify(line)});`)
+    .join("\n");
   const script = `#!/usr/bin/env node
 const fs = require("node:fs");
 
@@ -19,6 +22,7 @@ const payload = {
 if (capturePath) {
   fs.writeFileSync(capturePath, JSON.stringify(payload), "utf8");
 }
+${extraStdout}
 console.log(JSON.stringify({
   type: "system",
   subtype: "init",
@@ -119,6 +123,84 @@ describe("cursor execute", () => {
       expect(capture.prompt).toContain("PAPERCLIP_API_KEY");
       expect(invocationPrompt).toContain("Paperclip runtime note:");
       expect(invocationPrompt).toContain("PAPERCLIP_API_URL");
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = previousHome;
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("redacts printenv-style secret output in adapter log chunks and result payloads", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cursor-execute-redaction-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "agent");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCursorCommand(commandPath, {
+      extraStdoutLines: [
+        "PAPERCLIP_API_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.signature",
+        "PAPERCLIP_AGENT_JWT_SECRET=super-secret-value",
+        "Authorization: Bearer sk-test-123456",
+        "PAPERCLIP_TASK_ID=task-123",
+      ],
+    });
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const logs: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
+      const result = await execute({
+        runId: "run-redaction",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Cursor Coder",
+          adapterType: "cursor",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          model: "auto",
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+
+      const stdoutLogs = logs
+        .filter((entry) => entry.stream === "stdout")
+        .map((entry) => entry.chunk)
+        .join("");
+      expect(stdoutLogs).toContain("PAPERCLIP_API_KEY=***REDACTED***");
+      expect(stdoutLogs).toContain("PAPERCLIP_AGENT_JWT_SECRET=***REDACTED***");
+      expect(stdoutLogs).toContain("Authorization: Bearer ***REDACTED***");
+      expect(stdoutLogs).toContain("PAPERCLIP_TASK_ID=task-123");
+      expect(stdoutLogs).not.toContain("payload.signature");
+      expect(stdoutLogs).not.toContain("super-secret-value");
+      expect(stdoutLogs).not.toContain("sk-test-123456");
+
+      expect(result.resultJson).toMatchObject({
+        stdout: expect.stringContaining("PAPERCLIP_API_KEY=***REDACTED***"),
+      });
+      expect(JSON.stringify(result.resultJson)).not.toContain("payload.signature");
+      expect(JSON.stringify(result.resultJson)).not.toContain("super-secret-value");
+      expect(JSON.stringify(result.resultJson)).not.toContain("sk-test-123456");
     } finally {
       if (previousHome === undefined) {
         delete process.env.HOME;

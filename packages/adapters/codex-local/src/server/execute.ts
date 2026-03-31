@@ -18,6 +18,7 @@ import {
   resolvePaperclipDesiredSkillNames,
   renderTemplate,
   joinPromptSections,
+  redactSensitiveOutputText,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
@@ -513,10 +514,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       onSpawn,
       onLog: async (stream, chunk) => {
         if (stream !== "stderr") {
-          await onLog(stream, chunk);
+          await onLog(stream, redactSensitiveOutputText(chunk));
           return;
         }
-        const cleaned = stripCodexRolloutNoise(chunk);
+        const cleaned = redactSensitiveOutputText(stripCodexRolloutNoise(chunk));
         if (!cleaned.trim()) return;
         await onLog(stream, cleaned);
       },
@@ -581,8 +582,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       billingType,
       costUsd: null,
       resultJson: {
-        stdout: attempt.proc.stdout,
-        stderr: attempt.proc.stderr,
+        stdout: redactSensitiveOutputText(attempt.proc.stdout),
+        stderr: redactSensitiveOutputText(attempt.proc.stderr),
       },
       summary: attempt.parsed.summary,
       clearSession: Boolean(clearSessionOnMissingSession && !resolvedSessionId),

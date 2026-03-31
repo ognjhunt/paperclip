@@ -10,6 +10,8 @@ import {
   parseObject,
   buildPaperclipEnv,
   redactEnvForLogs,
+  redactSensitiveOutputText,
+  redactSensitiveOutputValue,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePaperclipSkillSymlink,
@@ -398,7 +400,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const emitNormalizedStdoutLine = async (rawLine: string) => {
       const normalized = normalizeCursorStreamLine(rawLine);
       if (!normalized.line) return;
-      await onLog(normalized.stream ?? "stdout", `${normalized.line}\n`);
+      await onLog(normalized.stream ?? "stdout", `${redactSensitiveOutputText(normalized.line)}\n`);
     };
     const flushStdoutChunk = async (chunk: string, finalize = false) => {
       const combined = `${stdoutLineBuffer}${chunk}`;
@@ -427,7 +429,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       onSpawn,
       onLog: async (stream, chunk) => {
         if (stream !== "stdout") {
-          await onLog(stream, chunk);
+          await onLog(stream, redactSensitiveOutputText(chunk));
           return;
         }
         await flushStdoutChunk(chunk);
@@ -500,10 +502,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       model,
       billingType,
       costUsd: attempt.parsed.costUsd,
-      resultJson: {
+      resultJson: redactSensitiveOutputValue({
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,
-      },
+      }),
       summary: attempt.parsed.summary,
       clearSession: Boolean(clearSessionOnMissingSession && !resolvedSessionId),
     };

@@ -15,6 +15,8 @@ import {
   readPaperclipRuntimeSkillEntries,
   joinPromptSections,
   redactEnvForLogs,
+  redactSensitiveOutputText,
+  redactSensitiveOutputValue,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePathInEnv,
@@ -280,7 +282,9 @@ export async function runClaudeLogin(input: {
     env: runtime.env,
     timeoutSec: runtime.timeoutSec,
     graceSec: runtime.graceSec,
-    onLog,
+    onLog: async (stream, chunk) => {
+      await onLog(stream, redactSensitiveOutputText(chunk));
+    },
   });
 
   const loginMeta = detectClaudeLoginRequired({
@@ -458,7 +462,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timeoutSec,
       graceSec,
       onSpawn,
-      onLog,
+      onLog: async (stream, chunk) => {
+        await onLog(stream, redactSensitiveOutputText(chunk));
+      },
     });
 
     const parsedStream = parseClaudeStreamJson(proc.stdout);
@@ -507,10 +513,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorMessage: parseFallbackErrorMessage(proc),
         errorCode: loginMeta.requiresLogin ? "claude_auth_required" : null,
         errorMeta,
-        resultJson: {
+        resultJson: redactSensitiveOutputValue({
           stdout: proc.stdout,
           stderr: proc.stderr,
-        },
+        }),
         clearSession: Boolean(opts.clearSessionOnMissingSession),
       };
     }
@@ -559,7 +565,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       model: parsedStream.model || asString(parsed.model, model),
       billingType,
       costUsd: parsedStream.costUsd ?? asNumber(parsed.total_cost_usd, 0),
-      resultJson: parsed,
+      resultJson: redactSensitiveOutputValue(parsed),
       summary: parsedStream.summary || asString(parsed.result, ""),
       clearSession: clearSessionForMaxTurns || Boolean(opts.clearSessionOnMissingSession && !resolvedSessionId),
     };

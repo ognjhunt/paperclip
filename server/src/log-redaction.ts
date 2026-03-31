@@ -1,6 +1,7 @@
 import os from "node:os";
 
 export const CURRENT_USER_REDACTION_TOKEN = "*";
+export const CURRENT_SECRET_REDACTION_TOKEN = "***REDACTED***";
 
 export interface CurrentUserRedactionOptions {
   enabled?: boolean;
@@ -15,10 +16,41 @@ type CurrentUserCandidates = {
   replacement: string;
 };
 
+const SENSITIVE_KEY_RE = /(key|token|secret|password|passwd|authorization|cookie)/i;
+const ENV_ASSIGNMENT_RE =
+  /\b([A-Z][A-Z0-9_.-]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|AUTHORIZATION|COOKIE)[A-Z0-9_.-]*)=([^\r\n]*)/g;
+const JSON_ASSIGNMENT_RE =
+  /((["'])([A-Za-z0-9_.-]*(?:key|token|secret|password|passwd|authorization|cookie)[A-Za-z0-9_.-]*)\2\s*:\s*)("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^,\]\}\r\n]+)/g;
+const AUTH_BEARER_RE = /(Authorization\s*:\s*Bearer\s+)([^\s\r\n]+)/gi;
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const proto = Object.getPrototypeOf(value);
   return proto === Object.prototype || proto === null;
+}
+
+function isSensitiveKey(key: string) {
+  return SENSITIVE_KEY_RE.test(key);
+}
+
+function redactSecretsInText(input: string) {
+  if (!input) return input;
+
+  let result = input.replace(ENV_ASSIGNMENT_RE, (_match, key: string) => {
+    if (!isSensitiveKey(key)) return _match;
+    return `${key}=${CURRENT_SECRET_REDACTION_TOKEN}`;
+  });
+
+  result = result.replace(
+    JSON_ASSIGNMENT_RE,
+    (_match, prefix: string, _quote: string, key: string) => {
+      if (!isSensitiveKey(key)) return _match;
+      return `${prefix}"${CURRENT_SECRET_REDACTION_TOKEN}"`;
+    },
+  );
+
+  result = result.replace(AUTH_BEARER_RE, `$1${CURRENT_SECRET_REDACTION_TOKEN}`);
+  return result;
 }
 
 function escapeRegExp(value: string) {
@@ -124,7 +156,7 @@ export function redactCurrentUserText(input: string, opts?: CurrentUserRedaction
     result = result.replace(pattern, maskUserNameForLogs(userName, replacement));
   }
 
-  return result;
+  return redactSecretsInText(result);
 }
 
 export function redactCurrentUserValue<T>(value: T, opts?: CurrentUserRedactionOptions): T {
@@ -140,6 +172,10 @@ export function redactCurrentUserValue<T>(value: T, opts?: CurrentUserRedactionO
 
   const redacted: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value)) {
+    if (isSensitiveKey(key)) {
+      redacted[key] = CURRENT_SECRET_REDACTION_TOKEN;
+      continue;
+    }
     redacted[key] = redactCurrentUserValue(entry, opts);
   }
   return redacted as T;

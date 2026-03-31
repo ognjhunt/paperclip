@@ -38,6 +38,12 @@ export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
 const SENSITIVE_ENV_KEY = /(key|token|secret|password|passwd|authorization|cookie)/i;
+const REDACTED_SECRET_TOKEN = "***REDACTED***";
+const SENSITIVE_OUTPUT_ENV_ASSIGNMENT_RE =
+  /\b([A-Z][A-Z0-9_.-]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|AUTHORIZATION|COOKIE)[A-Z0-9_.-]*)=([^\r\n]*)/g;
+const SENSITIVE_OUTPUT_JSON_ASSIGNMENT_RE =
+  /((["'])([A-Za-z0-9_.-]*(?:key|token|secret|password|passwd|authorization|cookie)[A-Za-z0-9_.-]*)\2\s*:\s*)("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^,\]\}\r\n]+)/g;
+const SENSITIVE_OUTPUT_BEARER_RE = /(Authorization\s*:\s*Bearer\s+)([^\s\r\n]+)/gi;
 const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../skills",
   "../../../../../skills",
@@ -199,6 +205,53 @@ export function redactEnvForLogs(env: Record<string, string>): Record<string, st
     redacted[key] = SENSITIVE_ENV_KEY.test(key) ? "***REDACTED***" : value;
   }
   return redacted;
+}
+
+export function redactSensitiveOutputText(text: string): string {
+  if (!text) return text;
+
+  let result = text.replace(SENSITIVE_OUTPUT_ENV_ASSIGNMENT_RE, (_match, key: string) => {
+    if (!SENSITIVE_ENV_KEY.test(key)) return _match;
+    return `${key}=${REDACTED_SECRET_TOKEN}`;
+  });
+
+  result = result.replace(
+    SENSITIVE_OUTPUT_JSON_ASSIGNMENT_RE,
+    (_match, prefix: string, _quote: string, key: string) => {
+      if (!SENSITIVE_ENV_KEY.test(key)) return _match;
+      return `${prefix}"${REDACTED_SECRET_TOKEN}"`;
+    },
+  );
+
+  result = result.replace(SENSITIVE_OUTPUT_BEARER_RE, `$1${REDACTED_SECRET_TOKEN}`);
+  return result;
+}
+
+export function redactSensitiveOutputValue<T>(value: T): T {
+  if (typeof value === "string") {
+    return redactSensitiveOutputText(value) as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => redactSensitiveOutputValue(entry)) as T;
+  }
+  if (typeof value !== "object" || value === null) {
+    return value;
+  }
+
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) {
+    return value;
+  }
+
+  const redacted: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (SENSITIVE_ENV_KEY.test(key)) {
+      redacted[key] = REDACTED_SECRET_TOKEN;
+      continue;
+    }
+    redacted[key] = redactSensitiveOutputValue(entry);
+  }
+  return redacted as T;
 }
 
 export function buildPaperclipEnv(agent: { id: string; companyId: string }): Record<string, string> {
