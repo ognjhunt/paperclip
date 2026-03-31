@@ -92,6 +92,16 @@ export type {
   IssueAttachment,
   IssueLabel,
 } from "./issue.js";
+export type {
+  HandoffPriority,
+  HandoffType,
+  HandoffOutcome,
+  HandoffRequest,
+  HandoffResponse,
+  HandoffRequestEnvelope,
+  HandoffResponseEnvelope,
+  ParsedHandoffComment,
+} from "../handoffs.js";
 export type { Goal } from "./goal.js";
 export type { Approval, ApprovalComment } from "./approval.js";
 export type {

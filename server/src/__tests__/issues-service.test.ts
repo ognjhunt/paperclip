@@ -313,4 +313,106 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       resurfacedIssueId,
     ]));
   });
+
+  it("rejects a handoff issue's first comment when the structured request payload is missing", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "OpsLead",
+      role: "cto",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "[Handoff] work-request: QA review for capture cap-123",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentId,
+      createdByAgentId: agentId,
+    });
+
+    await expect(
+      svc.addComment(issueId, "Please take this next.", { agentId }),
+    ).rejects.toMatchObject({
+      status: 422,
+    });
+  });
+
+  it("accepts a valid structured handoff request as the first comment", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "OpsLead",
+      role: "cto",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "[Handoff] work-request: QA review for capture cap-123",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentId,
+      createdByAgentId: agentId,
+    });
+
+    const comment = await svc.addComment(
+      issueId,
+      JSON.stringify({
+        handoff: {
+          version: "1.0",
+          from: "ops-lead",
+          to: "capture-qa-agent",
+          type: "work-request",
+          priority: "high",
+          context: {
+            summary: "Review the new capture submission",
+            sourceIssueId: "BLU-42",
+            relatedArtifacts: [{ type: "gcs", path: "captures/cap-123" }],
+          },
+          expectedOutcome: "QA verdict with evidence",
+          responseSchema: {
+            verdict: "PASS|BORDERLINE|FAIL",
+          },
+        },
+      }),
+      { agentId },
+    );
+
+    expect(comment.issueId).toBe(issueId);
+    expect(comment.authorAgentId).toBe(agentId);
+  });
 });

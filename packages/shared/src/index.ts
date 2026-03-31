@@ -543,6 +543,24 @@ export { API_PREFIX, API } from "./api.js";
 export { normalizeAgentUrlKey, deriveAgentUrlKey, isUuidLike } from "./agent-url-key.js";
 export { deriveProjectUrlKey, normalizeProjectUrlKey } from "./project-url-key.js";
 export {
+  handoffRequestSchema,
+  handoffResponseSchema,
+  handoffRequestEnvelopeSchema,
+  handoffResponseEnvelopeSchema,
+  extractHandoffJsonCandidate,
+  parseHandoffComment,
+  validateHandoffComment,
+  isHandoffIssueTitle,
+  type HandoffPriority,
+  type HandoffType,
+  type HandoffOutcome,
+  type HandoffRequest,
+  type HandoffResponse,
+  type HandoffRequestEnvelope,
+  type HandoffResponseEnvelope,
+  type ParsedHandoffComment,
+} from "./handoffs.js";
+export {
   AGENT_MENTION_SCHEME,
   PROJECT_MENTION_SCHEME,
   buildAgentMentionHref,

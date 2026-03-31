@@ -21,7 +21,12 @@ import {
   projectWorkspaces,
   projects,
 } from "@paperclipai/db";
-import { extractAgentMentionIds, extractProjectMentionIds } from "@paperclipai/shared";
+import {
+  extractAgentMentionIds,
+  extractProjectMentionIds,
+  isHandoffIssueTitle,
+  validateHandoffComment,
+} from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
@@ -35,6 +40,22 @@ import { getDefaultCompanyGoal } from "./goals.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
+
+function assertValidStructuredHandoffComment(input: {
+  title: string | null;
+  existingCommentCount: number;
+  body: string;
+}) {
+  const shouldRequireRequest = isHandoffIssueTitle(input.title) && input.existingCommentCount === 0;
+  const looksLikeStructuredHandoff =
+    shouldRequireRequest || /"handoff(?:_response)?"\s*:/i.test(input.body) || /```(?:json)?/i.test(input.body);
+  const validation = validateHandoffComment(input.body, shouldRequireRequest ? "request" : undefined);
+  if (looksLikeStructuredHandoff && !validation.ok) {
+    throw unprocessable(validation.reason, validation.details);
+  }
+  if (!validation.ok) return null;
+  return validation.parsed;
+}
 
 function assertTransition(from: string, to: string) {
   if (from === to) return;
@@ -1447,12 +1468,23 @@ export function issueService(db: Db) {
 
     addComment: async (issueId: string, body: string, actor: { agentId?: string; userId?: string }) => {
       const issue = await db
-        .select({ companyId: issues.companyId })
+        .select({ companyId: issues.companyId, title: issues.title })
         .from(issues)
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null);
 
       if (!issue) throw notFound("Issue not found");
+
+      const [{ totalComments }] = await db
+        .select({ totalComments: sql<number>`count(*)::int` })
+        .from(issueComments)
+        .where(eq(issueComments.issueId, issueId));
+
+      assertValidStructuredHandoffComment({
+        title: issue.title,
+        existingCommentCount: Number(totalComments ?? 0),
+        body,
+      });
 
       const currentUserRedactionOptions = {
         enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
