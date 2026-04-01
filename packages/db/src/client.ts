@@ -14,6 +14,15 @@ function createUtilitySql(url: string) {
   return postgres(url, { max: 1, onnotice: () => {} });
 }
 
+function resolvePoolMax(): number {
+  const raw = process.env.PAPERCLIP_DB_POOL_MAX?.trim();
+  const parsed = raw ? Number(raw) : NaN;
+  if (Number.isFinite(parsed) && parsed >= 1) {
+    return Math.floor(parsed);
+  }
+  return 20;
+}
+
 function isSafeIdentifier(value: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
 }
@@ -46,7 +55,9 @@ export type MigrationState =
     };
 
 export function createDb(url: string) {
-  const sql = postgres(url);
+  const sql = postgres(url, {
+    max: resolvePoolMax(),
+  });
   return drizzlePg(sql, { schema });
 }
 

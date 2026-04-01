@@ -49,8 +49,8 @@ import { logger } from "../middleware/logger.js";
 /** Default interval between scheduler ticks (30 seconds). */
 const DEFAULT_TICK_INTERVAL_MS = 30_000;
 
-/** Default timeout for a runJob RPC call (5 minutes). */
-const DEFAULT_JOB_TIMEOUT_MS = 5 * 60 * 1_000;
+/** Default timeout for a runJob RPC call (60 seconds). */
+const DEFAULT_JOB_TIMEOUT_MS = 60_000;
 
 /** Maximum number of concurrent job executions across all plugins. */
 const DEFAULT_MAX_CONCURRENT_JOBS = 10;
@@ -208,7 +208,12 @@ export function createPluginJobScheduler(
     jobStore,
     workerManager,
     tickIntervalMs = DEFAULT_TICK_INTERVAL_MS,
-    jobTimeoutMs = DEFAULT_JOB_TIMEOUT_MS,
+    jobTimeoutMs = (() => {
+      const envTimeout = Number(process.env.PAPERCLIP_PLUGIN_JOB_TIMEOUT_MS ?? "");
+      return Number.isFinite(envTimeout) && envTimeout >= 1_000
+        ? Math.floor(envTimeout)
+        : DEFAULT_JOB_TIMEOUT_MS;
+    })(),
     maxConcurrentJobs = DEFAULT_MAX_CONCURRENT_JOBS,
   } = options;
 

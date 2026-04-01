@@ -22,6 +22,7 @@ import { useToast } from "../context/ToastContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
+import { buildRunNarrative, buildRunReasonLabel, detectRunDiagnostic } from "../lib/run-narrative";
 import { AgentConfigForm } from "../components/AgentConfigForm";
 import { PageTabBar } from "../components/PageTabBar";
 import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
@@ -2761,9 +2762,9 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
   const statusInfo = runStatusIcons[run.status] ?? { icon: Clock, color: "text-neutral-400" };
   const StatusIcon = statusInfo.icon;
   const metrics = runMetrics(run);
-  const summary = run.resultJson
-    ? String((run.resultJson as Record<string, unknown>).summary ?? (run.resultJson as Record<string, unknown>).result ?? "")
-    : run.error ?? "";
+  const narrative = buildRunNarrative(run);
+  const reasonLabel = buildRunReasonLabel(run);
+  const summary = narrative.compact;
 
   return (
     <Link
@@ -2789,6 +2790,11 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
         </span>
         <span className="ml-auto text-[11px] text-muted-foreground shrink-0">
           {relativeTime(run.createdAt)}
+        </span>
+      </div>
+      <div className="flex items-center gap-2 pl-5.5">
+        <span className="inline-flex items-center rounded-full border border-border/70 bg-background/70 px-1.5 py-0.5 text-[10px] font-medium text-foreground/80">
+          {reasonLabel}
         </span>
       </div>
       {summary && (
@@ -2983,6 +2989,8 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
     queryKey: queryKeys.runIssues(run.id),
     queryFn: () => activityApi.issuesForRun(run.id),
   });
+  const narrative = useMemo(() => buildRunNarrative(run, touchedIssues), [run, touchedIssues]);
+  const runDiagnostic = useMemo(() => detectRunDiagnostic(run), [run]);
   const touchedIssueIds = useMemo(
     () => Array.from(new Set((touchedIssues ?? []).map((issue) => issue.issueId))),
     [touchedIssues],
@@ -3110,6 +3118,37 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
                 )}
               </div>
             )}
+            <div className="grid gap-2 sm:grid-cols-2">
+              <div className="rounded-md border border-border/70 bg-background/60 p-2.5">
+                <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Why it ran</div>
+                <div className="mt-1 text-xs leading-5">{narrative.why}</div>
+              </div>
+              <div className="rounded-md border border-border/70 bg-background/60 p-2.5">
+                <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Work scope</div>
+                <div className="mt-1 text-xs leading-5">{narrative.work}</div>
+              </div>
+              <div className="rounded-md border border-border/70 bg-background/60 p-2.5">
+                <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Outcome</div>
+                <div className="mt-1 text-xs leading-5">{narrative.outcome}</div>
+              </div>
+              <div className="rounded-md border border-border/70 bg-background/60 p-2.5">
+                <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Session continuity</div>
+                <div className="mt-1 text-xs leading-5">{narrative.session}</div>
+              </div>
+            </div>
+            {runDiagnostic && (
+              <div
+                className={cn(
+                  "rounded-md border px-3 py-2 text-xs leading-5",
+                  runDiagnostic.tone === "error" && "border-red-300 bg-red-50 text-red-800 dark:border-red-500/30 dark:bg-red-950/20 dark:text-red-200",
+                  runDiagnostic.tone === "warn" && "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-500/30 dark:bg-amber-950/20 dark:text-amber-200",
+                  runDiagnostic.tone === "info" && "border-blue-300 bg-blue-50 text-blue-900 dark:border-blue-500/30 dark:bg-blue-950/20 dark:text-blue-200",
+                  runDiagnostic.tone === "success" && "border-green-300 bg-green-50 text-green-900 dark:border-green-500/30 dark:bg-green-950/20 dark:text-green-200",
+                )}
+              >
+                {runDiagnostic.text}
+              </div>
+            )}
             {run.error && (
               <div className="text-xs">
                 <span className="text-red-600 dark:text-red-400">{run.error}</span>
@@ -3202,11 +3241,12 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
               onClick={() => setSessionOpen((v) => !v)}
             >
               <ChevronRight className={cn("h-3 w-3 transition-transform", sessionOpen && "rotate-90")} />
-              Session
+              Conversation continuity
               {sessionChanged && <span className="text-yellow-400 ml-1">(changed)</span>}
             </button>
             {sessionOpen && (
               <div className="px-4 pb-3 space-y-1 text-xs">
+                <p className="pb-1 text-muted-foreground">{narrative.session}</p>
                 {run.sessionIdBefore && (
                   <div className="flex items-center gap-2">
                     <span className="text-muted-foreground w-12">{sessionChanged ? "Before" : "ID"}</span>
@@ -3256,7 +3296,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
       {/* Issues touched by this run */}
       {touchedIssues && touchedIssues.length > 0 && (
         <div className="space-y-2">
-          <span className="text-xs font-medium text-muted-foreground">Issues Touched ({touchedIssues.length})</span>
+          <span className="text-xs font-medium text-muted-foreground">Work this run touched ({touchedIssues.length})</span>
           <div className="border border-border rounded-lg divide-y divide-border">
             {touchedIssues.map((issue) => (
               <Link
@@ -3675,6 +3715,21 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     () => buildTranscript(logLines, adapter.parseStdoutLine, { censorUsernameInLogs }),
     [adapter, censorUsernameInLogs, logLines],
   );
+  const diagnosticText = useMemo(() => {
+    const eventText = events
+      .map((event) => event.message ?? (event.payload ? JSON.stringify(event.payload) : ""))
+      .filter((value) => value.length > 0)
+      .join("\n");
+    const logText = logLines.map((line) => line.chunk).join("\n");
+    return [eventText, logText].filter((value) => value.length > 0).join("\n");
+  }, [events, logLines]);
+  const liveDiagnostic = useMemo(
+    () => detectRunDiagnostic(run, diagnosticText),
+    [diagnosticText, run],
+  );
+  const baseDiagnostic = useMemo(() => detectRunDiagnostic(run), [run]);
+  const transcriptDiagnostic =
+    liveDiagnostic && liveDiagnostic.text !== baseDiagnostic?.text ? liveDiagnostic : null;
 
   useEffect(() => {
     setTranscriptMode("nice");
@@ -3768,6 +3823,20 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
               </pre>
             </div>
           )}
+        </div>
+      )}
+
+      {transcriptDiagnostic && (
+        <div
+          className={cn(
+            "rounded-lg border px-3 py-2 text-xs leading-5",
+            transcriptDiagnostic.tone === "error" && "border-red-300 bg-red-50 text-red-800 dark:border-red-500/30 dark:bg-red-950/20 dark:text-red-200",
+            transcriptDiagnostic.tone === "warn" && "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-500/30 dark:bg-amber-950/20 dark:text-amber-200",
+            transcriptDiagnostic.tone === "info" && "border-blue-300 bg-blue-50 text-blue-900 dark:border-blue-500/30 dark:bg-blue-950/20 dark:text-blue-200",
+            transcriptDiagnostic.tone === "success" && "border-green-300 bg-green-50 text-green-900 dark:border-green-500/30 dark:bg-green-950/20 dark:text-green-200",
+          )}
+        >
+          {transcriptDiagnostic.text}
         </div>
       )}
 
@@ -3872,7 +3941,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
       {events.length > 0 && (
         <div>
-          <div className="mb-2 text-xs font-medium text-muted-foreground">Events ({events.length})</div>
+          <div className="mb-2 text-xs font-medium text-muted-foreground">Raw system events ({events.length})</div>
           <div className="bg-neutral-100 dark:bg-neutral-950 rounded-lg p-3 font-mono text-xs space-y-0.5">
             {events.map((evt) => {
               const color = evt.color

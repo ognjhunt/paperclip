@@ -386,6 +386,56 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routineIssues).toHaveLength(0);
   });
 
+  it("coalesces repeated parallel dispatches without recording failed runs", async () => {
+    const { routine, svc } = await seedFixture({
+      wakeup: async (wakeupAgentId, wakeupOpts) => {
+        const issueId =
+          (typeof wakeupOpts.payload?.issueId === "string" && wakeupOpts.payload.issueId) ||
+          (typeof wakeupOpts.contextSnapshot?.issueId === "string" && wakeupOpts.contextSnapshot.issueId) ||
+          null;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        if (!issueId) return null;
+        const queuedRunId = randomUUID();
+        await db.insert(heartbeatRuns).values({
+          id: queuedRunId,
+          companyId: routine.companyId,
+          agentId: wakeupAgentId,
+          invocationSource: wakeupOpts.source ?? "assignment",
+          triggerDetail: wakeupOpts.triggerDetail ?? null,
+          status: "queued",
+          contextSnapshot: { ...(wakeupOpts.contextSnapshot ?? {}), issueId },
+        });
+        await db
+          .update(issues)
+          .set({
+            executionRunId: queuedRunId,
+            executionLockedAt: new Date(),
+          })
+          .where(eq(issues.id, issueId));
+        return { id: queuedRunId };
+      },
+    });
+
+    const runs = await Promise.all(
+      Array.from({ length: 6 }, () => svc.runRoutine(routine.id, { source: "manual" })),
+    );
+
+    expect(runs.filter((run) => run.status === "issue_created")).toHaveLength(1);
+    expect(runs.filter((run) => run.status === "coalesced")).toHaveLength(5);
+    expect(runs.filter((run) => run.status === "failed")).toHaveLength(0);
+
+    const routineIssues = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.originId, routine.id));
+    expect(routineIssues).toHaveLength(1);
+
+    const persistedRuns = await svc.listRuns(routine.id, 20);
+    expect(persistedRuns.filter((run) => run.status === "issue_created")).toHaveLength(1);
+    expect(persistedRuns.filter((run) => run.status === "coalesced")).toHaveLength(5);
+    expect(persistedRuns.filter((run) => run.status === "failed")).toHaveLength(0);
+  });
+
   it("accepts standard second-precision webhook timestamps for HMAC triggers", async () => {
     const { routine, svc } = await seedFixture();
     const { trigger, secretMaterial } = await svc.createTrigger(

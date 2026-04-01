@@ -116,6 +116,66 @@ describe("buildExecutionConfigForAdapter", () => {
       search: true,
     });
   });
+
+  it("sanitizes Claude-only fields when building a Codex fallback config", () => {
+    const config = buildExecutionConfigForAdapter({
+      agentAdapterType: "claude_local",
+      executionAdapterType: "codex_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        model: "claude-sonnet-4-6",
+        dangerouslySkipPermissions: true,
+      },
+      runtimeConfig: {
+        executionPolicy: {
+          preferredAdapterTypes: ["claude_local", "codex_local"],
+          perAdapterConfig: {
+            codex_local: {
+              model: "gpt-5.4-mini",
+              dangerouslySkipPermissions: true,
+              dangerouslyBypassApprovalsAndSandbox: true,
+              search: true,
+            },
+          },
+        },
+      },
+    });
+
+    expect(config).toEqual({
+      cwd: "/tmp/project",
+      model: "gpt-5.4-mini",
+      dangerouslyBypassApprovalsAndSandbox: true,
+      search: true,
+    });
+  });
+
+  it("drops invalid OpenCode model strings instead of carrying adapter-incompatible values", () => {
+    const config = buildExecutionConfigForAdapter({
+      agentAdapterType: "claude_local",
+      executionAdapterType: "opencode_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        model: "claude-sonnet-4-6",
+      },
+      runtimeConfig: {
+        executionPolicy: {
+          preferredAdapterTypes: ["claude_local", "opencode_local"],
+          perAdapterConfig: {
+            opencode_local: {
+              model: "minimax-m2.5-free",
+              timeoutSec: 1800,
+              dangerouslySkipPermissions: true,
+            },
+          },
+        },
+      },
+    });
+
+    expect(config).toEqual({
+      cwd: "/tmp/project",
+      timeoutSec: 1800,
+    });
+  });
 });
 
 describe("resolveHeartbeatAdapterExecution", () => {
@@ -259,5 +319,167 @@ describe("resolveHeartbeatAdapterExecution", () => {
       throw new Error("expected block action");
     }
     expect(result.reason).toContain("claude_local");
+  });
+
+  it("uses explicit Claude-lane policy to prefer Hermes before OpenCode and Codex", async () => {
+    const result = await resolveHeartbeatAdapterExecution({
+      companyId: "company-1",
+      primaryAdapterType: "claude_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        model: "claude-sonnet-4-6",
+      },
+      runtimeConfig: {
+        executionPolicy: {
+          mode: "prefer_available",
+          compatibleAdapterTypes: ["claude_local", "hermes_local", "opencode_local", "codex_local"],
+          preferredAdapterTypes: ["claude_local", "hermes_local", "opencode_local", "codex_local"],
+          perAdapterConfig: {
+            hermes_local: {
+              cwd: "/tmp/project",
+              model: "qwen/qwen3.6-plus-preview:free",
+              timeoutSec: 1800,
+            },
+            opencode_local: {
+              cwd: "/tmp/project",
+              model: "opencode/minimax-m2.5-free",
+              timeoutSec: 1800,
+            },
+            codex_local: {
+              cwd: "/tmp/project",
+              model: "gpt-5.4-mini",
+              modelReasoningEffort: "high",
+              dangerouslyBypassApprovalsAndSandbox: true,
+            },
+          },
+        },
+      },
+      getQuotaWindows: vi.fn(async (adapterType: string) => {
+        if (adapterType === "claude_local") {
+          return {
+            provider: "anthropic",
+            ok: true,
+            windows: [
+              {
+                label: "Current week (Sonnet only)",
+                usedPercent: 100,
+                resetsAt: "2026-03-31T18:00:00.000Z",
+                valueLabel: null,
+                detail: null,
+              },
+            ],
+          };
+        }
+        return null;
+      }),
+      testEnvironment: vi.fn(async (adapterType: string) => {
+        if (adapterType === "hermes_local") {
+          return {
+            adapterType,
+            status: "pass",
+            checks: [],
+            testedAt: new Date().toISOString(),
+          };
+        }
+        return null;
+      }),
+      now: new Date("2026-03-30T18:00:00.000Z"),
+    });
+
+    expect(result.action).toBe("run");
+    if (result.action !== "run") {
+      throw new Error("expected run action");
+    }
+    expect(result.adapterType).toBe("hermes_local");
+    expect(result.config).toMatchObject({
+      cwd: "/tmp/project",
+      model: "qwen/qwen3.6-plus-preview:free",
+      timeoutSec: 1800,
+    });
+  });
+
+  it("uses explicit Claude-lane policy to fall through to OpenCode when Hermes is unavailable", async () => {
+    const result = await resolveHeartbeatAdapterExecution({
+      companyId: "company-2",
+      primaryAdapterType: "claude_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        model: "claude-sonnet-4-6",
+      },
+      runtimeConfig: {
+        executionPolicy: {
+          mode: "prefer_available",
+          compatibleAdapterTypes: ["claude_local", "hermes_local", "opencode_local", "codex_local"],
+          preferredAdapterTypes: ["claude_local", "hermes_local", "opencode_local", "codex_local"],
+          perAdapterConfig: {
+            hermes_local: {
+              cwd: "/tmp/project",
+              model: "qwen/qwen3.6-plus-preview:free",
+              timeoutSec: 1800,
+            },
+            opencode_local: {
+              cwd: "/tmp/project",
+              model: "opencode/minimax-m2.5-free",
+              timeoutSec: 1800,
+            },
+          },
+        },
+      },
+      getQuotaWindows: vi.fn(async (adapterType: string) => {
+        if (adapterType === "claude_local") {
+          return {
+            provider: "anthropic",
+            ok: true,
+            windows: [
+              {
+                label: "Current week (Sonnet only)",
+                usedPercent: 100,
+                resetsAt: "2026-03-31T18:00:00.000Z",
+                valueLabel: null,
+                detail: null,
+              },
+            ],
+          };
+        }
+        return null;
+      }),
+      testEnvironment: vi.fn(async (adapterType: string) => {
+        if (adapterType === "hermes_local") {
+          return {
+            adapterType,
+            status: "fail",
+            checks: [
+              {
+                code: "auth_required",
+                level: "error",
+                message: "login is required",
+              },
+            ],
+            testedAt: new Date().toISOString(),
+          };
+        }
+        if (adapterType === "opencode_local") {
+          return {
+            adapterType,
+            status: "pass",
+            checks: [],
+            testedAt: new Date().toISOString(),
+          };
+        }
+        return null;
+      }),
+      now: new Date("2026-03-30T18:00:00.000Z"),
+    });
+
+    expect(result.action).toBe("run");
+    if (result.action !== "run") {
+      throw new Error("expected run action");
+    }
+    expect(result.adapterType).toBe("opencode_local");
+    expect(result.config).toMatchObject({
+      cwd: "/tmp/project",
+      model: "opencode/minimax-m2.5-free",
+      timeoutSec: 1800,
+    });
   });
 });

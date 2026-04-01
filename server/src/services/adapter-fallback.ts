@@ -213,6 +213,50 @@ export function mergeExecutionProfileIntoConfig(
   };
 }
 
+function sanitizeExecutionConfigForAdapter(
+  adapterType: string,
+  config: Record<string, unknown>,
+): Record<string, unknown> {
+  const next = { ...config };
+
+  switch (adapterType) {
+    case "claude_local":
+      delete next.dangerouslyBypassApprovalsAndSandbox;
+      delete next.modelReasoningEffort;
+      delete next.search;
+      delete next.variant;
+      break;
+    case "codex_local":
+      delete next.dangerouslySkipPermissions;
+      delete next.effort;
+      delete next.variant;
+      break;
+    case "hermes_local":
+      delete next.dangerouslySkipPermissions;
+      delete next.dangerouslyBypassApprovalsAndSandbox;
+      delete next.effort;
+      delete next.search;
+      delete next.variant;
+      break;
+    case "opencode_local": {
+      delete next.dangerouslySkipPermissions;
+      delete next.dangerouslyBypassApprovalsAndSandbox;
+      delete next.effort;
+      delete next.modelReasoningEffort;
+      delete next.search;
+      const model = asString(next.model);
+      if (model && !/^[^/\s]+\/[^/\s]+$/.test(model)) {
+        delete next.model;
+      }
+      break;
+    }
+    default:
+      break;
+  }
+
+  return next;
+}
+
 function parseResetDate(value: string | null | undefined): Date | null {
   if (typeof value !== "string" || value.trim().length === 0) return null;
   const parsed = new Date(value);
@@ -303,7 +347,12 @@ export function buildExecutionConfigForAdapter(input: {
     ...candidatePolicyConfig,
     ...legacyIssueAdapterOverride,
   };
-  return applyIssueExecutionOverrides(executionAdapterType, merged, input.issueExecutionOverrides ?? null);
+  const withOverrides = applyIssueExecutionOverrides(
+    executionAdapterType,
+    merged,
+    input.issueExecutionOverrides ?? null,
+  );
+  return sanitizeExecutionConfigForAdapter(executionAdapterType, withOverrides);
 }
 
 function buildAvailabilityCacheKey(input: {

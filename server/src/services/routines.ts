@@ -38,6 +38,8 @@ const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blo
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"];
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_CATCH_UP_RUNS = 25;
+const LIVE_EXECUTION_ISSUE_RETRY_ATTEMPTS = 5;
+const LIVE_EXECUTION_ISSUE_RETRY_DELAY_MS = 25;
 const WEEKDAY_INDEX: Record<string, number> = {
   Sun: 0,
   Mon: 1,
@@ -62,6 +64,33 @@ function floorToMinute(date: Date) {
   const copy = new Date(date.getTime());
   copy.setUTCSeconds(0, 0);
   return copy;
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function retryFindLiveExecutionIssueAfterConflict<TIssue>(input: {
+  lookup: () => Promise<TIssue | null>;
+  attempts?: number;
+  delayMs?: number;
+  sleepFn?: (ms: number) => Promise<void>;
+}): Promise<TIssue | null> {
+  const attempts = Math.max(1, input.attempts ?? LIVE_EXECUTION_ISSUE_RETRY_ATTEMPTS);
+  const delayMs = Math.max(0, input.delayMs ?? LIVE_EXECUTION_ISSUE_RETRY_DELAY_MS);
+  const sleepFn = input.sleepFn ?? sleep;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const issue = await input.lookup();
+    if (issue) {
+      return issue;
+    }
+    if (attempt < attempts - 1) {
+      await sleepFn(delayMs);
+    }
+  }
+
+  return null;
 }
 
 function getZonedMinuteParts(date: Date, timeZone: string) {
@@ -519,8 +548,12 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
   }) {
     const run = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
+      const txIssueSvc = issueService(txDb);
       await tx.execute(
         sql`select id from ${routines} where ${routines.id} = ${input.routine.id} and ${routines.companyId} = ${input.routine.companyId} for update`,
+      );
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtext(${input.routine.companyId}), hashtext(${input.routine.id}))`,
       );
 
       if (input.idempotencyKey) {
@@ -584,7 +617,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         }
 
         try {
-          createdIssue = await issueSvc.create(input.routine.companyId, {
+          createdIssue = await txIssueSvc.create(input.routine.companyId, {
             projectId: input.routine.projectId,
             goalId: input.routine.goalId,
             parentId: input.routine.parentIssueId,
@@ -609,7 +642,9 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             throw error;
           }
 
-          const existingIssue = await findLiveExecutionIssue(input.routine, txDb);
+          const existingIssue = await retryFindLiveExecutionIssueAfterConflict({
+            lookup: () => findLiveExecutionIssue(input.routine, txDb),
+          });
           if (!existingIssue) throw error;
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
           const updated = await finalizeRun(createdRun.id, {
