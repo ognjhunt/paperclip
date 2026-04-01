@@ -401,6 +401,36 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       }
     }
 
+    const unboundRoutineIds = routineIds.filter((routineId) => !rowsByOriginId.has(routineId));
+    if (unboundRoutineIds.length > 0) {
+      const unboundRows = await db
+        .selectDistinctOn([issues.originId], {
+          originId: issues.originId,
+          id: issues.id,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+          priority: issues.priority,
+          updatedAt: issues.updatedAt,
+        })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.originKind, "routine_execution"),
+            inArray(issues.originId, unboundRoutineIds),
+            inArray(issues.status, OPEN_ISSUE_STATUSES),
+            isNull(issues.hiddenAt),
+          ),
+        )
+        .orderBy(issues.originId, desc(issues.updatedAt), desc(issues.createdAt));
+
+      for (const row of unboundRows) {
+        if (!row.originId) continue;
+        rowsByOriginId.set(row.originId, row);
+      }
+    }
+
     const map = new Map<string, RoutineListItem["activeIssue"]>();
     for (const row of rowsByOriginId.values()) {
       if (!row.originId) continue;
@@ -471,7 +501,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       .then((rows) => rows[0]?.issues ?? null);
     if (executionBoundIssue) return executionBoundIssue;
 
-    return executor
+    const legacyExecutionBoundIssue = await executor
       .select()
       .from(issues)
       .innerJoin(
@@ -494,6 +524,23 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
       .limit(1)
       .then((rows) => rows[0]?.issues ?? null);
+    if (legacyExecutionBoundIssue) return legacyExecutionBoundIssue;
+
+    return executor
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, "routine_execution"),
+          eq(issues.originId, routine.id),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
   }
 
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {
