@@ -555,6 +555,60 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       .then((rows) => rows[0] ?? null);
   }
 
+  async function hydrateLiveExecutionIssue(
+    routine: typeof routines.$inferSelect,
+    issueId: string,
+    executor: Db = db,
+  ) {
+    const existing = await executor
+      .select({
+        id: issues.id,
+        title: issues.title,
+        description: issues.description,
+        projectId: issues.projectId,
+        goalId: issues.goalId,
+        parentId: issues.parentId,
+        priority: issues.priority,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    if (!existing) return null;
+
+    const nextDescription = routine.description ?? existing.description;
+    const patch = {
+      title: routine.title,
+      description: nextDescription,
+      projectId: routine.projectId,
+      goalId: routine.goalId,
+      parentId: routine.parentIssueId,
+      priority: routine.priority,
+      assigneeAgentId: routine.assigneeAgentId,
+    };
+
+    const unchanged =
+      existing.title === patch.title &&
+      existing.description === patch.description &&
+      existing.projectId === patch.projectId &&
+      existing.goalId === patch.goalId &&
+      existing.parentId === patch.parentId &&
+      existing.priority === patch.priority &&
+      existing.assigneeAgentId === patch.assigneeAgentId;
+
+    if (unchanged) return existing;
+
+    await executor
+      .update(issues)
+      .set({
+        ...patch,
+        updatedAt: new Date(),
+      })
+      .where(eq(issues.id, issueId));
+
+    return { ...existing, ...patch };
+  }
+
   async function createWebhookSecret(
     companyId: string,
     routineId: string,
@@ -645,6 +699,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
       try {
         const activeIssue = await findLiveExecutionIssue(input.routine, txDb);
         if (activeIssue && input.routine.concurrencyPolicy !== "always_enqueue") {
+          await hydrateLiveExecutionIssue(input.routine, activeIssue.id, txDb);
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
           const updated = await finalizeRun(createdRun.id, {
             status,
@@ -693,6 +748,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             lookup: () => findLiveExecutionIssue(input.routine, txDb),
           });
           if (!existingIssue) throw error;
+          await hydrateLiveExecutionIssue(input.routine, existingIssue.id, txDb);
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
           const updated = await finalizeRun(createdRun.id, {
             status,

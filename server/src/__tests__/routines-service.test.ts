@@ -214,6 +214,54 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routineIssues[0]?.id).toBe(previousIssue.id);
   });
 
+  it("rehydrates a reused execution issue from the current routine contract before coalescing", async () => {
+    const { companyId, issueSvc, routine, svc } = await seedFixture();
+    const previousRunId = randomUUID();
+    const previousIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: "stale title",
+      description: null,
+      status: "todo",
+      priority: "low",
+      assigneeAgentId: routine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: routine.id,
+      originRunId: previousRunId,
+    });
+
+    await db.insert(routineRuns).values({
+      id: previousRunId,
+      companyId,
+      routineId: routine.id,
+      triggerId: null,
+      source: "manual",
+      status: "issue_created",
+      triggeredAt: new Date("2026-03-20T12:00:00.000Z"),
+      linkedIssueId: previousIssue.id,
+      completedAt: new Date("2026-03-20T12:00:00.000Z"),
+    });
+
+    const run = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(run.status).toBe("coalesced");
+    expect(run.linkedIssueId).toBe(previousIssue.id);
+
+    const hydratedIssue = await db
+      .select({
+        title: issues.title,
+        description: issues.description,
+        priority: issues.priority,
+      })
+      .from(issues)
+      .where(eq(issues.id, previousIssue.id))
+      .then((rows) => rows[0] ?? null);
+
+    expect(hydratedIssue).toEqual({
+      title: routine.title,
+      description: routine.description,
+      priority: routine.priority,
+    });
+  });
+
   it("wakes the assignee when a routine creates a fresh execution issue", async () => {
     const { agentId, routine, svc, wakeups } = await seedFixture();
 
