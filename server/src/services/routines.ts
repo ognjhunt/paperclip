@@ -38,8 +38,8 @@ const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blo
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running"];
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_CATCH_UP_RUNS = 25;
-const LIVE_EXECUTION_ISSUE_RETRY_ATTEMPTS = 5;
-const LIVE_EXECUTION_ISSUE_RETRY_DELAY_MS = 25;
+const LIVE_EXECUTION_ISSUE_RETRY_ATTEMPTS = 8;
+const LIVE_EXECUTION_ISSUE_RETRY_DELAY_MS = 50;
 const WEEKDAY_INDEX: Record<string, number> = {
   Sun: 0,
   Mon: 1,

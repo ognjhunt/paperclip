@@ -250,6 +250,8 @@ export async function startServer(): Promise<StartedServer> {
   let migrationSummary: MigrationSummary = "skipped";
   let activeDatabaseConnectionString: string;
   let resolvedEmbeddedPostgresPort: number | null = null;
+  const requireExternalPostgresForBlueprint =
+    /^(1|true|yes)$/i.test(process.env.BLUEPRINT_PAPERCLIP_REQUIRE_EXTERNAL_POSTGRES ?? "");
   let startupDbInfo:
     | { mode: "external-postgres"; connectionString: string }
     | { mode: "embedded-postgres"; dataDir: string; port: number };
@@ -261,6 +263,12 @@ export async function startServer(): Promise<StartedServer> {
     activeDatabaseConnectionString = config.databaseUrl;
     startupDbInfo = { mode: "external-postgres", connectionString: config.databaseUrl };
   } else {
+    if (requireExternalPostgresForBlueprint) {
+      throw new Error(
+        "DATABASE_URL is required for the shared Blueprint Paperclip instance. " +
+          "Embedded PostgreSQL is disabled while BLUEPRINT_PAPERCLIP_REQUIRE_EXTERNAL_POSTGRES is enabled.",
+      );
+    }
     const moduleName = "embedded-postgres";
     let EmbeddedPostgres: EmbeddedPostgresCtor;
     try {
@@ -373,7 +381,7 @@ export async function startServer(): Promise<StartedServer> {
       }
       port = detectedPort;
       logger.info(`Using embedded PostgreSQL because no DATABASE_URL set (dataDir=${dataDir}, port=${port})`);
-      embeddedPostgres = new EmbeddedPostgres({
+      const embeddedPostgresCandidate = new EmbeddedPostgres({
         databaseDir: dataDir,
         user: "paperclip",
         password: "paperclip",
@@ -386,8 +394,9 @@ export async function startServer(): Promise<StartedServer> {
 
       if (!clusterAlreadyInitialized) {
         try {
-          await embeddedPostgres.initialise();
+          await embeddedPostgresCandidate.initialise();
         } catch (err) {
+          embeddedPostgres = null;
           logEmbeddedPostgresFailure("initialise", err);
           throw formatEmbeddedPostgresError(err, {
             fallbackMessage: `Failed to initialize embedded PostgreSQL cluster in ${dataDir} on port ${port}`,
@@ -409,14 +418,16 @@ export async function startServer(): Promise<StartedServer> {
         rmSync(postmasterPidFile, { force: true });
       }
       try {
-        await embeddedPostgres.start();
+        await embeddedPostgresCandidate.start();
       } catch (err) {
+        embeddedPostgres = null;
         logEmbeddedPostgresFailure("start", err);
         throw formatEmbeddedPostgresError(err, {
           fallbackMessage: `Failed to start embedded PostgreSQL on port ${port}`,
           recentLogs: logBuffer.getRecentLogs(),
         });
       }
+      embeddedPostgres = embeddedPostgresCandidate;
       embeddedPostgresStartedByThisProcess = true;
     }
   

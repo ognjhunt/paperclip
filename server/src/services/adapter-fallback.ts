@@ -94,6 +94,30 @@ function asString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function isModelCompatibleWithAdapter(adapterType: string, model: string): boolean {
+  const normalized = model.trim().toLowerCase();
+  if (!normalized) return false;
+
+  switch (adapterType) {
+    case "claude_local":
+      return normalized.startsWith("claude");
+    case "codex_local":
+      return !normalized.includes("/") && (
+        normalized.startsWith("gpt-") ||
+        normalized.startsWith("o1") ||
+        normalized.startsWith("o3") ||
+        normalized.startsWith("o4") ||
+        normalized.includes("codex")
+      );
+    case "hermes_local":
+      return /^[^/\s]+\/[^/\s]+$/.test(normalized);
+    case "opencode_local":
+      return /^[^/\s]+\/[^/\s]+$/.test(normalized);
+    default:
+      return true;
+  }
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -305,8 +329,9 @@ function applyIssueExecutionOverrides(
 ): Record<string, unknown> {
   if (!overrides) return config;
   const next = { ...config };
-  if (typeof overrides.model === "string" && overrides.model.trim().length > 0) {
-    next.model = overrides.model.trim();
+  const overrideModel = asString(overrides.model);
+  if (overrideModel && isModelCompatibleWithAdapter(adapterType, overrideModel)) {
+    next.model = overrideModel;
   }
   if (typeof overrides.reasoningEffort === "string" && overrides.reasoningEffort.trim().length > 0) {
     Object.assign(next, mapReasoningEffort(adapterType, overrides.reasoningEffort.trim()));

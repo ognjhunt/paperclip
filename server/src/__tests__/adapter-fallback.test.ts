@@ -176,6 +176,67 @@ describe("buildExecutionConfigForAdapter", () => {
       timeoutSec: 1800,
     });
   });
+
+  it("does not leak a Claude issue-level model override into Codex or OpenCode fallbacks", () => {
+    const codexConfig = buildExecutionConfigForAdapter({
+      agentAdapterType: "claude_local",
+      executionAdapterType: "codex_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        model: "claude-sonnet-4-6",
+      },
+      runtimeConfig: {
+        executionPolicy: {
+          preferredAdapterTypes: ["claude_local", "codex_local", "opencode_local"],
+          perAdapterConfig: {
+            codex_local: {
+              model: "gpt-5.4-mini",
+            },
+            opencode_local: {
+              model: "opencode/minimax-m2.5-free",
+            },
+          },
+        },
+      },
+      issueExecutionOverrides: {
+        model: "claude-sonnet-4-6",
+      },
+    });
+
+    const opencodeConfig = buildExecutionConfigForAdapter({
+      agentAdapterType: "claude_local",
+      executionAdapterType: "opencode_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        model: "claude-sonnet-4-6",
+      },
+      runtimeConfig: {
+        executionPolicy: {
+          preferredAdapterTypes: ["claude_local", "codex_local", "opencode_local"],
+          perAdapterConfig: {
+            codex_local: {
+              model: "gpt-5.4-mini",
+            },
+            opencode_local: {
+              model: "opencode/minimax-m2.5-free",
+            },
+          },
+        },
+      },
+      issueExecutionOverrides: {
+        model: "claude-sonnet-4-6",
+      },
+    });
+
+    expect(codexConfig).toMatchObject({
+      cwd: "/tmp/project",
+      model: "gpt-5.4-mini",
+    });
+    expect(opencodeConfig).toMatchObject({
+      cwd: "/tmp/project",
+      model: "opencode/minimax-m2.5-free",
+    });
+  });
 });
 
 describe("resolveHeartbeatAdapterExecution", () => {
