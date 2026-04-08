@@ -11,7 +11,7 @@ import { LocalWorkspaceRuntimeFields } from "../local-workspace-runtime-fields";
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
 const instructionsFileHint =
-  "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Injected into the system prompt at runtime. Note: Codex may still auto-apply repo-scoped AGENTS.md files from the workspace.";
+  "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Injected into the system prompt at runtime. Paperclip suppresses workspace project docs for these runs so repo-scoped AGENTS.md files are not loaded twice.";
 
 export function CodexLocalConfigFields({
   mode,
@@ -56,6 +56,24 @@ export function CodexLocalConfigFields({
           </div>
         </Field>
       )}
+      <ToggleField
+        label="Suppress workspace project docs"
+        hint="When an instructions file is set, disable Codex workspace project-doc loading for this run so repo-scoped AGENTS.md and similar docs are not injected a second time."
+        checked={
+          isCreate
+            ? values!.suppressWorkspaceProjectDocs ?? true
+            : eff(
+                "adapterConfig",
+                "suppressWorkspaceProjectDocs",
+                config.instructionsFilePath ? true : false,
+              )
+        }
+        onChange={(v) =>
+          isCreate
+            ? set!({ suppressWorkspaceProjectDocs: v })
+            : mark("adapterConfig", "suppressWorkspaceProjectDocs", v)
+        }
+      />
       <ToggleField
         label="Bypass sandbox"
         hint={help.dangerouslyBypassSandbox}

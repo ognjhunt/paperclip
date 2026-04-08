@@ -107,6 +107,69 @@ interface PluginHealthCheckResult {
   lastError?: string;
 }
 
+function buildPluginHealthCheckResult(
+  plugin: {
+    id: string;
+    status: string;
+    lastError?: string | null;
+    manifestJson?: { id?: string | null } | null;
+  },
+  workerManager?: PluginWorkerManager,
+): PluginHealthCheckResult {
+  const checks: PluginHealthCheckResult["checks"] = [];
+
+  checks.push({
+    name: "registry",
+    passed: true,
+    message: "Plugin found in registry",
+  });
+
+  const hasValidManifest = Boolean(plugin.manifestJson?.id);
+  checks.push({
+    name: "manifest",
+    passed: hasValidManifest,
+    message: hasValidManifest ? "Manifest is valid" : "Manifest is invalid or missing",
+  });
+
+  const isReady = plugin.status === "ready";
+  checks.push({
+    name: "status",
+    passed: isReady,
+    message: `Current status: ${plugin.status}`,
+  });
+
+  const workerHandle = workerManager?.getWorker(plugin.id);
+  const isWorkerRunning = workerHandle?.status === "running";
+  checks.push({
+    name: "worker_runtime",
+    passed: isReady ? isWorkerRunning : true,
+    message: isReady
+      ? isWorkerRunning
+        ? "Worker is running"
+        : workerHandle
+          ? `Worker is not runnable (status: ${workerHandle.status})`
+          : "Worker is not registered"
+      : "Worker runtime not required while plugin is not ready",
+  });
+
+  const hasNoError = !plugin.lastError;
+  if (!hasNoError) {
+    checks.push({
+      name: "error_state",
+      passed: false,
+      message: plugin.lastError ?? undefined,
+    });
+  }
+
+  return {
+    pluginId: plugin.id,
+    status: plugin.status,
+    healthy: isReady && hasValidManifest && hasNoError && isWorkerRunning,
+    checks,
+    lastError: plugin.lastError ?? undefined,
+  };
+}
+
 /** UUID v4 regex used for plugin ID route resolution. */
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -1352,48 +1415,8 @@ export function pluginRoutes(
       return;
     }
 
-    const checks: PluginHealthCheckResult["checks"] = [];
-
-    // Check 1: Plugin is registered
-    checks.push({
-      name: "registry",
-      passed: true,
-      message: "Plugin found in registry",
-    });
-
-    // Check 2: Manifest is valid
-    const hasValidManifest = Boolean(plugin.manifestJson?.id);
-    checks.push({
-      name: "manifest",
-      passed: hasValidManifest,
-      message: hasValidManifest ? "Manifest is valid" : "Manifest is invalid or missing",
-    });
-
-    // Check 3: Plugin status
-    const isHealthy = plugin.status === "ready";
-    checks.push({
-      name: "status",
-      passed: isHealthy,
-      message: `Current status: ${plugin.status}`,
-    });
-
-    // Check 4: No last error
-    const hasNoError = !plugin.lastError;
-    if (!hasNoError) {
-      checks.push({
-        name: "error_state",
-        passed: false,
-        message: plugin.lastError ?? undefined,
-      });
-    }
-
-    const result: PluginHealthCheckResult = {
-      pluginId: plugin.id,
-      status: plugin.status,
-      healthy: isHealthy && hasValidManifest && hasNoError,
-      checks,
-      lastError: plugin.lastError ?? undefined,
-    };
+    const workerManager = bridgeDeps?.workerManager ?? webhookDeps?.workerManager;
+    const result = buildPluginHealthCheckResult(plugin, workerManager);
 
     res.json(result);
   });
@@ -2165,45 +2188,7 @@ export function pluginRoutes(
       // Webhook data unavailable — leave empty
     }
 
-    // --- Health check (same logic as GET /health) ---
-    const checks: PluginHealthCheckResult["checks"] = [];
-
-    checks.push({
-      name: "registry",
-      passed: true,
-      message: "Plugin found in registry",
-    });
-
-    const hasValidManifest = Boolean(plugin.manifestJson?.id);
-    checks.push({
-      name: "manifest",
-      passed: hasValidManifest,
-      message: hasValidManifest ? "Manifest is valid" : "Manifest is invalid or missing",
-    });
-
-    const isHealthy = plugin.status === "ready";
-    checks.push({
-      name: "status",
-      passed: isHealthy,
-      message: `Current status: ${plugin.status}`,
-    });
-
-    const hasNoError = !plugin.lastError;
-    if (!hasNoError) {
-      checks.push({
-        name: "error_state",
-        passed: false,
-        message: plugin.lastError ?? undefined,
-      });
-    }
-
-    const health: PluginHealthCheckResult = {
-      pluginId: plugin.id,
-      status: plugin.status,
-      healthy: isHealthy && hasValidManifest && hasNoError,
-      checks,
-      lastError: plugin.lastError ?? undefined,
-    };
+    const health = buildPluginHealthCheckResult(plugin, wm ?? undefined);
 
     res.json({
       pluginId: plugin.id,

@@ -7,6 +7,7 @@ import { projectsApi } from "../api/projects";
 import { heartbeatsApi } from "../api/heartbeats";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { isRunningLiveRun } from "../lib/live-runs";
 import { queryKeys } from "../lib/queryKeys";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { EmptyState } from "../components/EmptyState";
@@ -60,7 +61,7 @@ export function Issues() {
   const liveIssueIds = useMemo(() => {
     const ids = new Set<string>();
     for (const run of liveRuns ?? []) {
-      if (run.issueId) ids.add(run.issueId);
+      if (run.issueId && isRunningLiveRun(run.status)) ids.add(run.issueId);
     }
     return ids;
   }, [liveRuns]);

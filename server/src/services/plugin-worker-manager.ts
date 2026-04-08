@@ -61,7 +61,8 @@ const DEFAULT_RPC_TIMEOUT_MS = 30_000;
 const MAX_RPC_TIMEOUT_MS = 5 * 60 * 1_000;
 
 /** Timeout for the initialize RPC call. */
-const INITIALIZE_TIMEOUT_MS = 15_000;
+const INITIALIZE_TIMEOUT_MS =
+  Number(process.env.PAPERCLIP_PLUGIN_INITIALIZE_TIMEOUT_MS || "") || 60_000;
 
 /** Timeout for the shutdown RPC call before escalating to SIGTERM. */
 const SHUTDOWN_DRAIN_MS = 10_000;

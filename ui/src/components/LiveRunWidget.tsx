@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Link } from "@/lib/router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
+import { isOpenLiveRun, isRunningLiveRun } from "../lib/live-runs";
 import { queryKeys } from "../lib/queryKeys";
 import { formatDateTime } from "../lib/utils";
 import { ExternalLink, Square } from "lucide-react";
@@ -18,10 +19,6 @@ interface LiveRunWidgetProps {
 function toIsoString(value: string | Date | null | undefined): string | null {
   if (!value) return null;
   return typeof value === "string" ? value : value.toISOString();
-}
-
-function isRunActive(status: string): boolean {
-  return status === "queued" || status === "running";
 }
 
 export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
@@ -59,6 +56,8 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
         agentId: activeRun.agentId,
         agentName: activeRun.agentName,
         adapterType: activeRun.adapterType,
+        logRef: activeRun.logRef,
+        logBytes: activeRun.logBytes,
         issueId,
       });
     }
@@ -99,8 +98,16 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
 
       <div className="divide-y divide-border/60">
         {runs.map((run) => {
-          const isActive = isRunActive(run.status);
+          const isOpen = isOpenLiveRun(run.status);
+          const isRunning = isRunningLiveRun(run.status);
           const transcript = transcriptByRun.get(run.id) ?? [];
+          const emptyMessage = hasOutputForRun(run.id)
+            ? "Waiting for transcript parsing..."
+            : run.status === "queued"
+              ? "Queued to start..."
+              : run.logRef
+                ? "Waiting for run output..."
+                : "No persisted transcript for this run.";
           return (
             <section key={run.id} className="px-4 py-4">
               <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -121,7 +128,7 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
                 </div>
 
                 <div className="flex items-center gap-2">
-                  {isActive && (
+                  {isOpen && (
                     <button
                       onClick={() => handleCancelRun(run.id)}
                       disabled={cancellingRunIds.has(run.id)}
@@ -146,9 +153,9 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
                   entries={transcript}
                   density="compact"
                   limit={8}
-                  streaming={isActive}
+                  streaming={isRunning}
                   collapseStdout
-                  emptyMessage={hasOutputForRun(run.id) ? "Waiting for transcript parsing..." : "Waiting for run output..."}
+                  emptyMessage={emptyMessage}
                 />
               </div>
             </section>

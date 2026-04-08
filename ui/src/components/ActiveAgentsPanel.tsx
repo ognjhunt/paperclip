@@ -5,6 +5,7 @@ import type { Issue } from "@paperclipai/shared";
 import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
 import { issuesApi } from "../api/issues";
 import type { TranscriptEntry } from "../adapters";
+import { isOpenLiveRun, isRunningLiveRun } from "../lib/live-runs";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, relativeTime } from "../lib/utils";
 import { ExternalLink } from "lucide-react";
@@ -13,10 +14,6 @@ import { RunTranscriptView } from "./transcript/RunTranscriptView";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
 
 const MIN_DASHBOARD_RUNS = 4;
-
-function isRunActive(run: LiveRunForIssue): boolean {
-  return run.status === "queued" || run.status === "running";
-}
 
 interface ActiveAgentsPanelProps {
   companyId: string;
@@ -67,7 +64,8 @@ export function ActiveAgentsPanel({ companyId }: ActiveAgentsPanelProps) {
               issue={run.issueId ? issueById.get(run.issueId) : undefined}
               transcript={transcriptByRun.get(run.id) ?? []}
               hasOutput={hasOutputForRun(run.id)}
-              isActive={isRunActive(run)}
+              isOpen={isOpenLiveRun(run.status)}
+              isRunning={isRunningLiveRun(run.status)}
             />
           ))}
         </div>
@@ -81,18 +79,35 @@ function AgentRunCard({
   issue,
   transcript,
   hasOutput,
-  isActive,
+  isOpen,
+  isRunning,
 }: {
   run: LiveRunForIssue;
   issue?: Issue;
   transcript: TranscriptEntry[];
   hasOutput: boolean;
-  isActive: boolean;
+  isOpen: boolean;
+  isRunning: boolean;
 }) {
+  const statusLabel = isRunning
+    ? "Live now"
+    : run.status === "queued"
+      ? "Queued"
+      : run.finishedAt
+        ? `Finished ${relativeTime(run.finishedAt)}`
+        : `Started ${relativeTime(run.createdAt)}`;
+  const emptyMessage = hasOutput
+    ? "Waiting for transcript parsing..."
+    : run.status === "queued"
+      ? "Queued to start..."
+      : run.logRef
+        ? "Waiting for output..."
+        : "No persisted transcript for this run.";
+
   return (
     <div className={cn(
       "flex h-[320px] flex-col overflow-hidden rounded-xl border shadow-sm",
-      isActive
+      isOpen
         ? "border-cyan-500/25 bg-cyan-500/[0.04] shadow-[0_16px_40px_rgba(6,182,212,0.08)]"
         : "border-border bg-background/70",
     )}>
@@ -100,10 +115,20 @@ function AgentRunCard({
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              {isActive ? (
+              {isOpen ? (
                 <span className="relative flex h-2.5 w-2.5 shrink-0">
-                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-cyan-400 opacity-70" />
-                  <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-cyan-500" />
+                  <span
+                    className={cn(
+                      "absolute inline-flex h-full w-full rounded-full opacity-70",
+                      isRunning ? "animate-ping bg-cyan-400" : "bg-amber-300",
+                    )}
+                  />
+                  <span
+                    className={cn(
+                      "relative inline-flex h-2.5 w-2.5 rounded-full",
+                      isRunning ? "bg-cyan-500" : "bg-amber-500",
+                    )}
+                  />
                 </span>
               ) : (
                 <span className="inline-flex h-2.5 w-2.5 rounded-full bg-muted-foreground/35" />
@@ -111,7 +136,7 @@ function AgentRunCard({
               <Identity name={run.agentName} size="sm" className="[&>span:last-child]:!text-[11px]" />
             </div>
             <div className="mt-2 flex items-center gap-2 text-[11px] text-muted-foreground">
-              <span>{isActive ? "Live now" : run.finishedAt ? `Finished ${relativeTime(run.finishedAt)}` : `Started ${relativeTime(run.createdAt)}`}</span>
+              <span>{statusLabel}</span>
             </div>
           </div>
 
@@ -129,7 +154,7 @@ function AgentRunCard({
               to={`/issues/${issue?.identifier ?? run.issueId}`}
               className={cn(
                 "line-clamp-2 hover:underline",
-                isActive ? "text-cyan-700 dark:text-cyan-300" : "text-muted-foreground hover:text-foreground",
+                isOpen ? "text-cyan-700 dark:text-cyan-300" : "text-muted-foreground hover:text-foreground",
               )}
               title={issue?.title ? `${issue?.identifier ?? run.issueId.slice(0, 8)} - ${issue.title}` : issue?.identifier ?? run.issueId.slice(0, 8)}
             >
@@ -145,10 +170,10 @@ function AgentRunCard({
           entries={transcript}
           density="compact"
           limit={5}
-          streaming={isActive}
+          streaming={isRunning}
           collapseStdout
           thinkingClassName="!text-[10px] !leading-4"
-          emptyMessage={hasOutput ? "Waiting for transcript parsing..." : isActive ? "Waiting for output..." : "No transcript captured."}
+          emptyMessage={emptyMessage}
         />
       </div>
     </div>

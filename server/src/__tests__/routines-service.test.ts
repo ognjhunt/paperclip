@@ -301,6 +301,63 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(wakeupResolved).toBe(true);
   });
 
+  it("commits the execution issue before querying wakeup state outside the dispatch transaction", async () => {
+    let wakeupSawCommittedIssue = false;
+    const { routine, svc } = await seedFixture({
+      wakeup: async (wakeupAgentId, wakeupOpts) => {
+        const issueId =
+          (typeof wakeupOpts.payload?.issueId === "string" && wakeupOpts.payload.issueId) ||
+          (typeof wakeupOpts.contextSnapshot?.issueId === "string" && wakeupOpts.contextSnapshot.issueId) ||
+          null;
+        if (!issueId) return null;
+
+        const visibleIssue = await db
+          .select({ id: issues.id })
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .then((rows) => rows[0] ?? null);
+        wakeupSawCommittedIssue = Boolean(visibleIssue);
+        if (!visibleIssue) return null;
+
+        const queuedRunId = randomUUID();
+        await db.insert(heartbeatRuns).values({
+          id: queuedRunId,
+          companyId: routine.companyId,
+          agentId: wakeupAgentId,
+          invocationSource: wakeupOpts.source ?? "assignment",
+          triggerDetail: wakeupOpts.triggerDetail ?? null,
+          status: "queued",
+          contextSnapshot: { ...(wakeupOpts.contextSnapshot ?? {}), issueId },
+        });
+        await db
+          .update(issues)
+          .set({
+            executionRunId: queuedRunId,
+            executionLockedAt: new Date(),
+          })
+          .where(eq(issues.id, issueId));
+        return { id: queuedRunId };
+      },
+    });
+
+    const run = await svc.runRoutine(routine.id, { source: "manual" });
+
+    expect(run.status).toBe("issue_created");
+    expect(wakeupSawCommittedIssue).toBe(true);
+
+    const persistedIssue = await db
+      .select({
+        executionRunId: issues.executionRunId,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, run.linkedIssueId!))
+      .then((rows) => rows[0] ?? null);
+
+    expect(persistedIssue?.executionRunId).toBeTruthy();
+    expect(persistedIssue?.executionLockedAt).toBeTruthy();
+  });
+
   it("coalesces when the existing routine issue is already attached to a live execution run", async () => {
     const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
     const previousRunId = randomUUID();

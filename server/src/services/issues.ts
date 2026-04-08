@@ -619,6 +619,41 @@ export function issueService(db: Db) {
     return adopted;
   }
 
+  function checkoutFailureError(input: {
+    current: {
+      id: string;
+      status: string;
+      assigneeAgentId: string | null;
+      checkoutRunId: string | null;
+      executionRunId: string | null;
+    };
+    agentId: string;
+    expectedStatuses: string[];
+  }) {
+    const { current, agentId, expectedStatuses } = input;
+    const details = {
+      issueId: current.id,
+      status: current.status,
+      assigneeAgentId: current.assigneeAgentId,
+      checkoutRunId: current.checkoutRunId,
+      executionRunId: current.executionRunId,
+      expectedStatuses,
+    };
+
+    if (!expectedStatuses.includes(current.status)) {
+      if (current.status === "done" || current.status === "cancelled") {
+        return unprocessable(`Issue cannot be checked out from status "${current.status}"`, details);
+      }
+      return conflict(`Issue status "${current.status}" is not eligible for checkout`, details);
+    }
+
+    if (current.assigneeAgentId && current.assigneeAgentId !== agentId) {
+      return conflict("Issue is already checked out by another agent", details);
+    }
+
+    return conflict("Issue checkout conflict", details);
+  }
+
   return {
     list: async (companyId: string, filters?: IssueFilters) => {
       const conditions = [eq(issues.companyId, companyId)];
@@ -1222,7 +1257,8 @@ export function issueService(db: Db) {
           expectedCheckoutRunId: current.checkoutRunId,
         });
         if (adopted) {
-          const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0]!);
+          const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0] ?? null);
+          if (!row) throw notFound("Issue not found");
           const [enriched] = await withIssueLabels(db, [row]);
           return enriched;
         }
@@ -1234,18 +1270,13 @@ export function issueService(db: Db) {
         current.status === "in_progress" &&
         sameRunLock(current.checkoutRunId, checkoutRunId)
       ) {
-        const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0]!);
+        const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0] ?? null);
+        if (!row) throw notFound("Issue not found");
         const [enriched] = await withIssueLabels(db, [row]);
         return enriched;
       }
 
-      throw conflict("Issue checkout conflict", {
-        issueId: current.id,
-        status: current.status,
-        assigneeAgentId: current.assigneeAgentId,
-        checkoutRunId: current.checkoutRunId,
-        executionRunId: current.executionRunId,
-      });
+      throw checkoutFailureError({ current, agentId, expectedStatuses });
     },
 
     assertCheckoutOwner: async (id: string, actorAgentId: string, actorRunId: string | null) => {

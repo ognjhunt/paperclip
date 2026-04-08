@@ -8,6 +8,7 @@ import { useSidebar } from "../context/SidebarContext";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { heartbeatsApi } from "../api/heartbeats";
+import { countRunningLiveRunsByAgent } from "../lib/live-runs";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { useAgentOrder } from "../hooks/useAgentOrder";
@@ -43,13 +44,10 @@ export function SidebarAgents() {
     refetchInterval: 10_000,
   });
 
-  const liveCountByAgent = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const run of liveRuns ?? []) {
-      counts.set(run.agentId, (counts.get(run.agentId) ?? 0) + 1);
-    }
-    return counts;
-  }, [liveRuns]);
+  const liveCountByAgent = useMemo(
+    () => countRunningLiveRunsByAgent(liveRuns),
+    [liveRuns],
+  );
 
   const visibleAgents = useMemo(() => {
     const filtered = (agents ?? []).filter(

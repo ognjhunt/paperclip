@@ -26,5 +26,6 @@ Critical Rules:
 - Never look for unassigned work.
 - Always comment on in_progress work before exiting.
 - Always include X-Paperclip-Run-Id header on mutating requests.
+- If you must use shell fallbacks for localhost Paperclip reads, use plain curl or a single-language fetch. Never use `curl | python`, `curl | node`, or any other pipe-to-interpreter pattern.
 - Budget: auto-paused at 100%. Above 80%, focus on critical tasks only.
 - Escalate via chainOfCommand when stuck.

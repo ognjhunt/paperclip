@@ -4,6 +4,7 @@ import type { LiveEvent } from "@paperclipai/shared";
 import { instanceSettingsApi } from "../../api/instanceSettings";
 import { heartbeatsApi, type LiveRunForIssue } from "../../api/heartbeats";
 import { buildTranscript, getUIAdapter, type RunLogChunk, type TranscriptEntry } from "../../adapters";
+import { shouldPollPersistedRunLog } from "../../lib/live-runs";
 import { queryKeys } from "../../lib/queryKeys";
 
 const LOG_POLL_INTERVAL_MS = 2000;
@@ -137,6 +138,8 @@ export function useLiveRunTranscripts({
     let cancelled = false;
 
     const readRunLog = async (run: LiveRunForIssue) => {
+      if (!shouldPollPersistedRunLog(run)) return;
+
       const offset = logOffsetByRunRef.current.get(run.id) ?? 0;
       try {
         const result = await heartbeatsApi.log(run.id, offset, LOG_READ_LIMIT_BYTES);

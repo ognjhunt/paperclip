@@ -487,7 +487,10 @@ export async function resolveHeartbeatAdapterExecution(input: {
   const executionPolicy = parseExecutionPolicy(input.primaryAdapterType, executionRuntimeConfig);
   const preferredAdapters = executionPolicy.mode === "fixed"
     ? [input.primaryAdapterType]
-    : executionPolicy.preferredAdapterTypes ?? [input.primaryAdapterType];
+    : dedupeAdapterTypes([
+      input.primaryAdapterType,
+      ...(executionPolicy.preferredAdapterTypes ?? []),
+    ]);
 
   const diagnostics: AvailabilityDiagnostic[] = [];
   for (const candidateAdapterType of preferredAdapters) {
@@ -514,12 +517,17 @@ export async function resolveHeartbeatAdapterExecution(input: {
     });
     if (availability.available) {
       const switched = candidateAdapterType !== input.primaryAdapterType;
+      const primaryDiagnostic = diagnostics.find((entry) => entry.adapterType === input.primaryAdapterType);
+      const primaryFailureReason =
+        primaryDiagnostic && !primaryDiagnostic.available ? primaryDiagnostic.reason : null;
       return {
         action: "run",
         adapterType: candidateAdapterType,
         config: candidateConfig,
         reason: switched
-          ? `Selected ${candidateAdapterType} because ${input.primaryAdapterType} was unavailable.`
+          ? primaryFailureReason
+            ? `Selected ${candidateAdapterType} because ${input.primaryAdapterType} was unavailable (${primaryFailureReason}).`
+            : `Selected ${candidateAdapterType} because ${input.primaryAdapterType} was unavailable.`
           : availability.reason,
         diagnostics,
       };

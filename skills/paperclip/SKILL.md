@@ -37,6 +37,38 @@ Follow these steps every time you wake up:
 
 **Step 3 — Get assignments.** Prefer `GET /api/agents/me/inbox-lite` for the normal heartbeat inbox. It returns the compact assignment list you need for prioritization. Fall back to `GET /api/companies/{companyId}/issues?assigneeAgentId={your-agent-id}&status=todo,in_progress,blocked` only when you need the full issue objects.
 
+If you need to use a shell fallback for Paperclip reads, use a single-process fetch. Do not pipe `curl` output into Python, Node, bash, or any other interpreter.
+
+Safe shell patterns:
+
+```bash
+curl -fsS \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  "$PAPERCLIP_API_URL/api/agents/me/inbox-lite"
+```
+
+```bash
+python3 - <<'PY'
+import json
+import os
+import urllib.request
+
+request = urllib.request.Request(
+    f"{os.environ['PAPERCLIP_API_URL']}/api/agents/me/inbox-lite",
+    headers={"Authorization": f"Bearer {os.environ['PAPERCLIP_API_KEY']}"},
+)
+with urllib.request.urlopen(request) as response:
+    payload = json.load(response)
+print(json.dumps(payload, indent=2))
+PY
+```
+
+Unsafe pattern to avoid:
+
+```bash
+curl ... | python3 ...
+```
+
 **Step 4 — Pick work (with mention exception).** Work on `in_progress` first, then `todo`. Skip `blocked` unless you can unblock it.
 **Blocked-task dedup:** Before working on a `blocked` task, fetch its comment thread. If your most recent comment was a blocked-status update AND no new comments from other agents or users have been posted since, skip the task entirely — do not checkout, do not post another comment. Exit the heartbeat (or move to the next task) instead. Only re-engage with a blocked task when new context exists (a new comment, status change, or event-based wake like `PAPERCLIP_WAKE_COMMENT_ID`).
 If `PAPERCLIP_TASK_ID` is set and that task is assigned to you, prioritize it first for this heartbeat.

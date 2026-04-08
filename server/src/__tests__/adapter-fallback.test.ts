@@ -543,4 +543,118 @@ describe("resolveHeartbeatAdapterExecution", () => {
       timeoutSec: 1800,
     });
   });
+
+  it("probes the primary adapter first even when runtime policy order is stale", async () => {
+    const testEnvironment = vi.fn(async (adapterType: string) => {
+      if (adapterType === "codex_local") {
+        return {
+          adapterType,
+          status: "pass",
+          checks: [],
+          testedAt: new Date().toISOString(),
+        };
+      }
+      return {
+        adapterType,
+        status: "fail",
+        checks: [
+          {
+            code: "auth_required",
+            level: "error",
+            message: "Claude login is required.",
+          },
+        ],
+        testedAt: new Date().toISOString(),
+      };
+    });
+
+    const result = await resolveHeartbeatAdapterExecution({
+      companyId: "company-3",
+      primaryAdapterType: "codex_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        model: "gpt-5.4-mini",
+        modelReasoningEffort: "xhigh",
+      },
+      runtimeConfig: {
+        executionPolicy: {
+          mode: "prefer_available",
+          preferredAdapterTypes: ["claude_local", "hermes_local", "opencode_local", "codex_local"],
+          compatibleAdapterTypes: ["claude_local", "hermes_local", "opencode_local", "codex_local"],
+        },
+      },
+      getQuotaWindows: vi.fn(async () => null),
+      testEnvironment,
+    });
+
+    expect(result.action).toBe("run");
+    if (result.action !== "run") {
+      throw new Error("expected run action");
+    }
+    expect(result.adapterType).toBe("codex_local");
+    expect(testEnvironment).toHaveBeenCalledTimes(1);
+    expect(testEnvironment).toHaveBeenCalledWith(
+      "codex_local",
+      expect.objectContaining({
+        cwd: "/tmp/project",
+        model: "gpt-5.4-mini",
+      }),
+    );
+  });
+
+  it("includes the actual primary probe failure reason in fallback messages", async () => {
+    const result = await resolveHeartbeatAdapterExecution({
+      companyId: "company-4",
+      primaryAdapterType: "codex_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+        model: "gpt-5.4-mini",
+      },
+      runtimeConfig: {
+        executionPolicy: {
+          mode: "prefer_available",
+          preferredAdapterTypes: ["claude_local", "codex_local"],
+          compatibleAdapterTypes: ["claude_local", "codex_local"],
+          perAdapterConfig: {
+            claude_local: {
+              cwd: "/tmp/project",
+              model: "claude-sonnet-4-6",
+              dangerouslySkipPermissions: true,
+            },
+          },
+        },
+      },
+      getQuotaWindows: vi.fn(async () => null),
+      testEnvironment: vi.fn(async (adapterType: string) => {
+        if (adapterType === "codex_local") {
+          return {
+            adapterType,
+            status: "fail",
+            checks: [
+              {
+                code: "auth_required",
+                level: "error",
+                message: "Codex login is required.",
+              },
+            ],
+            testedAt: new Date().toISOString(),
+          };
+        }
+        return {
+          adapterType,
+          status: "pass",
+          checks: [],
+          testedAt: new Date().toISOString(),
+        };
+      }),
+    });
+
+    expect(result.action).toBe("run");
+    if (result.action !== "run") {
+      throw new Error("expected run action");
+    }
+    expect(result.adapterType).toBe("claude_local");
+    expect(result.reason).toContain("codex_local was unavailable");
+    expect(result.reason).toContain("Codex login is required.");
+  });
 });

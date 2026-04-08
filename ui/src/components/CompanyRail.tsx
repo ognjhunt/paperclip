@@ -19,6 +19,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { cn } from "../lib/utils";
+import { countRunningLiveRuns } from "../lib/live-runs";
 import { queryKeys } from "../lib/queryKeys";
 import { sidebarBadgesApi } from "../api/sidebarBadges";
 import { heartbeatsApi } from "../api/heartbeats";
@@ -183,7 +184,7 @@ export function CompanyRail() {
   const hasLiveAgentsByCompanyId = useMemo(() => {
     const result = new Map<string, boolean>();
     companyIds.forEach((companyId, index) => {
-      result.set(companyId, (liveRunsQueries[index]?.data?.length ?? 0) > 0);
+      result.set(companyId, countRunningLiveRuns(liveRunsQueries[index]?.data) > 0);
     });
     return result;
   }, [companyIds, liveRunsQueries]);

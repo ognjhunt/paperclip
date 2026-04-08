@@ -52,6 +52,8 @@ curl http://localhost:3100/api/health
 curl http://localhost:3100/api/companies
 ```
 
+When you need localhost Paperclip reads in automation or agent prompts, do not pipe `curl` output into Python, Node, bash, or any interpreter. Use plain `curl`, `jq`, or a single-language fetch instead.
+
 Reset local dev DB:
 
 ```sh

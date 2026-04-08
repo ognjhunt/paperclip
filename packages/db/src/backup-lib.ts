@@ -1,6 +1,8 @@
-import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import { once } from "node:events";
+import { readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
+import { finished } from "node:stream/promises";
 import postgres from "postgres";
 
 export type RunDatabaseBackupOptions = {
@@ -149,12 +151,39 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   const excludedTableNames = normalizeTableNameSet(opts.excludeTables);
   const nullifiedColumnsByTable = normalizeNullifyColumnMap(opts.nullifyColumns);
   const sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
+  const flushThresholdBytes = 1024 * 1024;
+  let tempBackupFile: string | null = null;
 
   try {
     await sql`SELECT 1`;
 
-    const lines: string[] = [];
-    const emit = (line: string) => lines.push(line);
+    mkdirSync(opts.backupDir, { recursive: true });
+    const backupFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
+    tempBackupFile = `${backupFile}.tmp`;
+    const writer = createWriteStream(tempBackupFile, { encoding: "utf8" });
+    let bufferedLines: string[] = [];
+    let bufferedBytes = 0;
+    let writeQueue = Promise.resolve();
+
+    const flushBuffer = () => {
+      if (bufferedLines.length === 0) return;
+      const chunk = `${bufferedLines.join("\n")}\n`;
+      bufferedLines = [];
+      bufferedBytes = 0;
+      writeQueue = writeQueue.then(async () => {
+        if (!writer.write(chunk)) {
+          await once(writer, "drain");
+        }
+      });
+    };
+
+    const emit = (line: string) => {
+      bufferedLines.push(line);
+      bufferedBytes += Buffer.byteLength(line, "utf8") + 1;
+      if (bufferedBytes >= flushThresholdBytes) {
+        flushBuffer();
+      }
+    };
     const emitStatement = (statement: string) => {
       emit(statement);
       emit(STATEMENT_BREAKPOINT);
@@ -503,10 +532,12 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     emitStatement("COMMIT;");
     emit("");
 
-    // Write the backup file
-    mkdirSync(opts.backupDir, { recursive: true });
-    const backupFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
-    await writeFile(backupFile, lines.join("\n"), "utf8");
+    flushBuffer();
+    await writeQueue;
+    writer.end();
+    await finished(writer);
+    await rename(tempBackupFile, backupFile);
+    tempBackupFile = null;
 
     const sizeBytes = statSync(backupFile).size;
     const prunedCount = pruneOldBackups(opts.backupDir, retentionDays, filenamePrefix);
@@ -516,6 +547,11 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       sizeBytes,
       prunedCount,
     };
+  } catch (error) {
+    if (tempBackupFile) {
+      await unlink(tempBackupFile).catch(() => undefined);
+    }
+    throw error;
   } finally {
     await sql.end();
   }

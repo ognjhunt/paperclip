@@ -16,6 +16,7 @@ The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session p
 |-------|------|----------|-------------|
 | `cwd` | string | Yes | Working directory for the agent process (absolute path; created automatically if missing when permissions allow) |
 | `model` | string | No | Model to use |
+| `suppressWorkspaceProjectDocs` | boolean | No | Disable Codex workspace project-doc loading for the run by passing `-c project_doc_max_bytes=0` |
 | `promptTemplate` | string | No | Prompt used for all runs |
 | `env` | object | No | Environment variables (supports secret refs) |
 | `timeoutSec` | number | No | Process timeout (0 = no timeout) |
@@ -44,7 +45,7 @@ This installs any missing skills, creates an agent API key, and prints shell exp
 
 If `instructionsFilePath` is configured, Paperclip reads that file and prepends it to the stdin prompt sent to `codex exec` on every run.
 
-This is separate from any workspace-level instruction discovery that Codex itself performs in the run `cwd`. Paperclip does not disable Codex-native repo instruction files, so a repo-local `AGENTS.md` may still be loaded by Codex in addition to the Paperclip-managed agent instructions.
+When Paperclip injects an explicit instructions file, it also passes `-c project_doc_max_bytes=0` to Codex. That disables workspace project-doc loading for the run so repo-scoped `AGENTS.md` files are not loaded a second time on top of the Paperclip-managed instructions.
 
 ## Environment Test
 

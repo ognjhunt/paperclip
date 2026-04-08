@@ -408,6 +408,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
+  const suppressWorkspaceProjectDocs = asBoolean(
+    config.suppressWorkspaceProjectDocs,
+    instructionsFilePath.length > 0,
+  );
   let instructionsPrefix = "";
   let instructionsChars = 0;
   if (instructionsFilePath) {
@@ -426,23 +430,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
     }
   }
-  const repoAgentsNote =
-    "Codex exec automatically applies repo-scoped AGENTS.md instructions from the current workspace; Paperclip does not currently suppress that discovery.";
   const commandNotes = (() => {
     if (!instructionsFilePath) {
-      return [repoAgentsNote];
+      return [];
     }
     if (instructionsPrefix.length > 0) {
-      return [
+      const notes = [
         `Loaded agent instructions from ${instructionsFilePath}`,
         `Prepended instructions + path directive to stdin prompt (relative references from ${instructionsDir}).`,
-        repoAgentsNote,
       ];
+      if (suppressWorkspaceProjectDocs) {
+        notes.push("Suppressed Codex workspace project docs (including repo-scoped AGENTS.md) via -c project_doc_max_bytes=0.");
+      }
+      return notes;
     }
-    return [
+    const notes = [
       `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
-      repoAgentsNote,
     ];
+    if (suppressWorkspaceProjectDocs) {
+      notes.push("Suppressed Codex workspace project docs (including repo-scoped AGENTS.md) via -c project_doc_max_bytes=0.");
+    }
+    return notes;
   })();
   const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
   const templateData = {
@@ -480,6 +488,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (bypass) args.push("--dangerously-bypass-approvals-and-sandbox");
     if (model) args.push("--model", model);
     if (modelReasoningEffort) args.push("-c", `model_reasoning_effort=${JSON.stringify(modelReasoningEffort)}`);
+    if (suppressWorkspaceProjectDocs) args.push("-c", "project_doc_max_bytes=0");
     if (extraArgs.length > 0) args.push(...extraArgs);
     if (resumeSessionId) args.push("resume", resumeSessionId, "-");
     else args.push("-");

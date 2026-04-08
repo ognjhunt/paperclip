@@ -530,8 +530,15 @@ export async function startServer(): Promise<StartedServer> {
     authReady = true;
   }
   
-  const listenPort = await detectPort(config.port);
-  if (listenPort !== config.port) {
+  const requestedListenPort = config.port;
+  const listenPort = await detectPort(requestedListenPort);
+  const strictListenPort = /^(1|true|yes)$/i.test(process.env.PAPERCLIP_STRICT_PORT ?? "");
+  if (strictListenPort && listenPort !== requestedListenPort) {
+    throw new Error(
+      `Requested port ${requestedListenPort} is busy and PAPERCLIP_STRICT_PORT is enabled; refusing fallback to ${listenPort}`,
+    );
+  }
+  if (listenPort !== requestedListenPort) {
     config.port = listenPort;
   }
   if (resolvedEmbeddedPostgresPort !== null && resolvedEmbeddedPostgresPort !== config.embeddedPostgresPort) {
@@ -561,8 +568,10 @@ export async function startServer(): Promise<StartedServer> {
   });
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
   
-  if (listenPort !== config.port) {
-    logger.warn(`Requested port is busy; using next free port (requestedPort=${config.port}, selectedPort=${listenPort})`);
+  if (listenPort !== requestedListenPort) {
+    logger.warn(
+      `Requested port is busy; using next free port (requestedPort=${requestedListenPort}, selectedPort=${listenPort})`,
+    );
   }
   
   const runtimeListenHost = config.host;

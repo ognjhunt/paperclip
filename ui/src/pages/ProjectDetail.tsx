@@ -12,6 +12,7 @@ import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
 import { useToast } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { isRunningLiveRun } from "../lib/live-runs";
 import { queryKeys } from "../lib/queryKeys";
 import { ProjectProperties, type ProjectConfigFieldKey, type ProjectFieldSaveState } from "../components/ProjectProperties";
 import { InlineEditor } from "../components/InlineEditor";
@@ -166,7 +167,7 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
   const liveIssueIds = useMemo(() => {
     const ids = new Set<string>();
     for (const run of liveRuns ?? []) {
-      if (run.issueId) ids.add(run.issueId);
+      if (run.issueId && isRunningLiveRun(run.status)) ids.add(run.issueId);
     }
     return ids;
   }, [liveRuns]);

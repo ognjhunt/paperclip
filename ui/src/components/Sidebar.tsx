@@ -20,6 +20,7 @@ import { SidebarAgents } from "./SidebarAgents";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { heartbeatsApi } from "../api/heartbeats";
+import { countRunningLiveRuns } from "../lib/live-runs";
 import { queryKeys } from "../lib/queryKeys";
 import { useInboxBadge } from "../hooks/useInboxBadge";
 import { Button } from "@/components/ui/button";
@@ -35,7 +36,7 @@ export function Sidebar() {
     enabled: !!selectedCompanyId,
     refetchInterval: 10_000,
   });
-  const liveRunCount = liveRuns?.length ?? 0;
+  const liveRunCount = countRunningLiveRuns(liveRuns);
 
   function openSearch() {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }));

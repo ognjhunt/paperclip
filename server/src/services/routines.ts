@@ -647,7 +647,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
     payload?: Record<string, unknown> | null;
     idempotencyKey?: string | null;
   }) {
-    const run = await db.transaction(async (tx) => {
+    const dispatch = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
       const txIssueSvc = issueService(txDb);
       await tx.execute(
@@ -673,7 +673,14 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           .orderBy(desc(routineRuns.createdAt))
           .limit(1)
           .then((rows) => rows[0] ?? null);
-        if (existing) return existing;
+        if (existing) {
+          return {
+            run: existing,
+            queuedIssue: null,
+            triggeredAt: existing.triggeredAt,
+            nextRunAt: undefined,
+          };
+        }
       }
 
       const triggeredAt = new Date();
@@ -696,6 +703,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
         : undefined;
 
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
+      let createdIssueId: string | null = null;
       try {
         const activeIssue = await findLiveExecutionIssue(input.routine, txDb);
         if (activeIssue && input.routine.concurrencyPolicy !== "always_enqueue") {
@@ -715,7 +723,12 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             issueId: activeIssue.id,
             nextRunAt,
           }, txDb);
-          return updated ?? createdRun;
+          return {
+            run: updated ?? createdRun,
+            queuedIssue: null,
+            triggeredAt,
+            nextRunAt,
+          };
         }
 
         try {
@@ -732,6 +745,7 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             originId: input.routine.id,
             originRunId: createdRun.id,
           });
+          createdIssueId = createdIssue.id;
         } catch (error) {
           const isOpenExecutionConflict =
             !!error &&
@@ -764,35 +778,23 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
             issueId: existingIssue.id,
             nextRunAt,
           }, txDb);
-          return updated ?? createdRun;
+          return {
+            run: updated ?? createdRun,
+            queuedIssue: null,
+            triggeredAt,
+            nextRunAt,
+          };
         }
 
-        // Keep the dispatch lock until the issue is linked to a queued heartbeat run.
-        await queueIssueAssignmentWakeup({
-          heartbeat,
-          issue: createdIssue,
-          reason: "issue_assigned",
-          mutation: "create",
-          contextSource: "routine.dispatch",
-          requestedByActorType: input.source === "schedule" ? "system" : undefined,
-          rethrowOnError: true,
-        });
-        const updated = await finalizeRun(createdRun.id, {
-          status: "issue_created",
-          linkedIssueId: createdIssue.id,
-        }, txDb);
-        await updateRoutineTouchedState({
-          routineId: input.routine.id,
-          triggerId: input.trigger?.id ?? null,
+        return {
+          run: createdRun,
+          queuedIssue: createdIssue,
           triggeredAt,
-          status: "issue_created",
-          issueId: createdIssue.id,
           nextRunAt,
-        }, txDb);
-        return updated ?? createdRun;
+        };
       } catch (error) {
-        if (createdIssue) {
-          await txDb.delete(issues).where(eq(issues.id, createdIssue.id));
+        if (createdIssueId) {
+          await txDb.delete(issues).where(eq(issues.id, createdIssueId));
         }
         const failureReason = error instanceof Error ? error.message : String(error);
         const failed = await finalizeRun(createdRun.id, {
@@ -807,9 +809,60 @@ export function routineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeup
           status: "failed",
           nextRunAt,
         }, txDb);
-        return failed ?? createdRun;
+        return {
+          run: failed ?? createdRun,
+          queuedIssue: null,
+          triggeredAt,
+          nextRunAt,
+        };
       }
     });
+
+    let run = dispatch.run;
+
+    if (dispatch.queuedIssue) {
+      try {
+        // Wake the assignee only after the issue commit is visible outside the dispatch transaction.
+        await queueIssueAssignmentWakeup({
+          heartbeat,
+          issue: dispatch.queuedIssue,
+          reason: "issue_assigned",
+          mutation: "create",
+          contextSource: "routine.dispatch",
+          requestedByActorType: input.source === "schedule" ? "system" : undefined,
+          rethrowOnError: true,
+        });
+
+        run = (await finalizeRun(dispatch.run.id, {
+          status: "issue_created",
+          linkedIssueId: dispatch.queuedIssue.id,
+        })) ?? dispatch.run;
+        await updateRoutineTouchedState({
+          routineId: input.routine.id,
+          triggerId: input.trigger?.id ?? null,
+          triggeredAt: dispatch.triggeredAt,
+          status: "issue_created",
+          issueId: dispatch.queuedIssue.id,
+          nextRunAt: dispatch.nextRunAt,
+        });
+      } catch (error) {
+        await db.delete(issues).where(eq(issues.id, dispatch.queuedIssue.id));
+        const failureReason = error instanceof Error ? error.message : String(error);
+        run = (await finalizeRun(dispatch.run.id, {
+          status: "failed",
+          linkedIssueId: null,
+          failureReason,
+          completedAt: new Date(),
+        })) ?? dispatch.run;
+        await updateRoutineTouchedState({
+          routineId: input.routine.id,
+          triggerId: input.trigger?.id ?? null,
+          triggeredAt: dispatch.triggeredAt,
+          status: "failed",
+          nextRunAt: dispatch.nextRunAt,
+        });
+      }
+    }
 
     if (input.source === "schedule" || input.source === "webhook") {
       const actorId = input.source === "schedule" ? "routine-scheduler" : "routine-webhook";

@@ -330,6 +330,7 @@ export interface CreateConfigValues {
   adapterType: string;
   cwd: string;
   instructionsFilePath?: string;
+  suppressWorkspaceProjectDocs?: boolean;
   promptTemplate: string;
   model: string;
   thinkingEffort: string;
