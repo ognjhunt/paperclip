@@ -150,6 +150,11 @@ export function formatWorkerFailureMessage(message: string, stderrExcerpt: strin
   return `${message}\n\nWorker stderr:\n${excerpt}`;
 }
 
+export function shouldIgnoreWorkerPipeError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return code === "EPIPE" || code === "ERR_STREAM_DESTROYED";
+}
+
 /**
  * Options for starting a worker process.
  */
@@ -641,6 +646,16 @@ export function createPluginWorkerHandle(
       stderrReadline.on("line", (line: string) => {
         stderrExcerpt = appendStderrExcerpt(stderrExcerpt, line);
         log.warn({ stream: "stderr" }, `[plugin stderr] ${line}`);
+      });
+    }
+
+    if (child.stdin) {
+      child.stdin.on("error", (error) => {
+        if (shouldIgnoreWorkerPipeError(error)) {
+          log.warn({ err: error }, "worker stdin pipe closed");
+          return;
+        }
+        log.error({ err: error }, "worker stdin error");
       });
     }
 

@@ -58,6 +58,8 @@ export interface Config {
   databaseBackupIntervalMinutes: number;
   databaseBackupRetentionDays: number;
   databaseBackupDir: string;
+  runLogRetentionDays: number;
+  runLogRetentionIntervalMs: number;
   serveUi: boolean;
   uiDevMiddleware: boolean;
   secretsProvider: SecretProvider;
@@ -212,6 +214,14 @@ export function loadConfig(): Config {
       fileDatabaseBackup?.dir ??
       resolveDefaultBackupDir(),
   );
+  const runLogRetentionDays = Math.max(
+    1,
+    Number(process.env.PAPERCLIP_RUN_LOG_RETENTION_DAYS) || 7,
+  );
+  const runLogRetentionIntervalMs = Math.max(
+    60_000,
+    Number(process.env.PAPERCLIP_RUN_LOG_RETENTION_INTERVAL_MS) || 60 * 60 * 1_000,
+  );
 
   return {
     deploymentMode,
@@ -232,6 +242,8 @@ export function loadConfig(): Config {
     databaseBackupIntervalMinutes,
     databaseBackupRetentionDays,
     databaseBackupDir,
+    runLogRetentionDays,
+    runLogRetentionIntervalMs,
     serveUi:
       process.env.SERVE_UI !== undefined
         ? process.env.SERVE_UI === "true"

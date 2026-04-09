@@ -80,6 +80,24 @@ describe("execution policy synthesis", () => {
       },
     });
   });
+
+  it("keeps Hermes runtime defaults on Hermes and Codex only", () => {
+    const runtimeConfig = synthesizeExecutionRuntimeConfig({
+      adapterType: "hermes_local",
+      adapterConfig: {
+        cwd: "/tmp/project",
+      },
+      runtimeConfig: {},
+    });
+
+    expect(runtimeConfig).toMatchObject({
+      executionPolicy: {
+        mode: "prefer_available",
+        compatibleAdapterTypes: ["hermes_local", "codex_local"],
+        preferredAdapterTypes: ["hermes_local", "codex_local"],
+      },
+    });
+  });
 });
 
 describe("buildExecutionConfigForAdapter", () => {

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { appendStderrExcerpt, formatWorkerFailureMessage } from "../services/plugin-worker-manager.js";
+import {
+  appendStderrExcerpt,
+  formatWorkerFailureMessage,
+  shouldIgnoreWorkerPipeError,
+} from "../services/plugin-worker-manager.js";
 
 describe("plugin-worker-manager stderr failure context", () => {
   it("appends worker stderr context to failure messages", () => {
@@ -39,5 +43,11 @@ describe("plugin-worker-manager stderr failure context", () => {
     expect(excerpt).not.toContain("first line");
     expect(excerpt).not.toContain("second line");
     expect(excerpt.length).toBeLessThanOrEqual(8_000);
+  });
+
+  it("treats broken worker pipes as ignorable socket errors", () => {
+    expect(shouldIgnoreWorkerPipeError({ code: "EPIPE" })).toBe(true);
+    expect(shouldIgnoreWorkerPipeError({ code: "ERR_STREAM_DESTROYED" })).toBe(true);
+    expect(shouldIgnoreWorkerPipeError({ code: "ECONNRESET" })).toBe(false);
   });
 });

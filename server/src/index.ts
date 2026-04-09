@@ -17,6 +17,7 @@ import {
   createEmbeddedPostgresLogBuffer,
   reconcilePendingMigrationHistory,
   formatDatabaseBackupResult,
+  pruneDatabaseBackups,
   runDatabaseBackup,
   authUsers,
   companies,
@@ -34,6 +35,7 @@ import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
+import { startRunLogRetention } from "./services/run-log-retention.js";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -648,6 +650,26 @@ export async function startServer(): Promise<StartedServer> {
   }
   
   if (config.databaseBackupEnabled) {
+    try {
+      const prunedCount = pruneDatabaseBackups(
+        config.databaseBackupDir,
+        config.databaseBackupRetentionDays,
+        "paperclip",
+      );
+      if (prunedCount > 0) {
+        logger.info(
+          {
+            prunedCount,
+            backupDir: config.databaseBackupDir,
+            retentionDays: config.databaseBackupRetentionDays,
+          },
+          "Pruned expired database backups on startup",
+        );
+      }
+    } catch (err) {
+      logger.warn({ err, backupDir: config.databaseBackupDir }, "Startup database backup prune failed");
+    }
+
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
     let backupInFlight = false;
   
@@ -694,6 +716,12 @@ export async function startServer(): Promise<StartedServer> {
       void runScheduledBackup();
     }, backupIntervalMs);
   }
+
+  startRunLogRetention(
+    process.env.RUN_LOG_BASE_PATH,
+    config.runLogRetentionIntervalMs,
+    config.runLogRetentionDays,
+  );
   
   await new Promise<void>((resolveListen, rejectListen) => {
     const onError = (err: Error) => {

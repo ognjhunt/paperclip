@@ -1,8 +1,162 @@
-diff --git a/dist/server/execute.js b/dist/server/execute.js
-index e96d5c9c0d175a06c668406ba57ac8f5ba750901..67ce7508f7fb02f87b97456b3f872451958838e6 100644
+--- a/dist/shared/constants.js
++++ b/dist/shared/constants.js
+@@ -12,7 +12,7 @@
+ /** Grace period after SIGTERM before SIGKILL (seconds). */
+ export const DEFAULT_GRACE_SEC = 10;
+ /** Default model to use if none specified. */
+-export const DEFAULT_MODEL = "anthropic/claude-sonnet-4";
++export const DEFAULT_MODEL = "openrouter/free";
+ /**
+  * Valid --provider choices for the hermes CLI.
+  * Must stay in sync with `hermes chat --help`.
+@@ -81,4 +81,4 @@
+ export const TOOL_OUTPUT_PREFIX = "┊";
+ /** Prefix for Hermes thinking blocks. */
+ export const THINKING_PREFIX = "💭";
+-//# sourceMappingURL=constants.js.map
+\ No newline at end of file
++//# sourceMappingURL=constants.js.map
+--- a/dist/server/detect-model.js
++++ b/dist/server/detect-model.js
+@@ -82,6 +82,12 @@
+  */
+ export function inferProviderFromModel(model) {
+     const lower = model.toLowerCase();
++    if (lower === "openrouter/free" || lower.startsWith("openrouter/")) {
++        return "openrouter";
++    }
++    if (lower.endsWith(":free") && lower.includes("/")) {
++        return "openrouter";
++    }
+     // Strip provider/ prefix if present (e.g. "anthropic/claude-sonnet-4")
+     const bareName = lower.includes("/") ? lower.split("/").pop() : lower;
+     for (const [prefix, hint] of MODEL_PREFIX_PROVIDER_HINTS) {
+@@ -129,4 +135,4 @@
+     // 4. Let Hermes auto-detect
+     return { provider: "auto", resolvedFrom: "auto" };
+ }
+-//# sourceMappingURL=detect-model.js.map
+\ No newline at end of file
++//# sourceMappingURL=detect-model.js.map
 --- a/dist/server/execute.js
 +++ b/dist/server/execute.js
-@@ -42,58 +42,48 @@ function cfgStringArray(v) {
+@@ -37,63 +37,164 @@
+         ? v
+         : undefined;
+ }
++function cfgLooseStringArray(v) {
++    if (Array.isArray(v) && v.every((i) => typeof i === "string")) {
++        return v;
++    }
++    if (typeof v === "string" && v.trim().length > 0) {
++        return v
++            .split(",")
++            .map((item) => item.trim())
++            .filter((item) => item.length > 0);
++    }
++    return undefined;
++}
++function normalizeModelList(values) {
++    const seen = new Set();
++    const normalized = [];
++    for (const value of values) {
++        if (typeof value !== "string")
++            continue;
++        const trimmed = value.trim();
++        if (!trimmed || seen.has(trimmed))
++            continue;
++        seen.add(trimmed);
++        normalized.push(trimmed);
++    }
++    return normalized;
++}
++function isDisallowedModel(model) {
++    const normalized = model.trim().toLowerCase();
++    return normalized.startsWith("claude") || normalized.startsWith("anthropic/claude");
++}
++function resolveModelCandidates(config) {
++    const configuredModel = cfgString(config.model);
++    const ladder = MODEL_LADDER_CONFIG_KEYS.flatMap((key) => cfgLooseStringArray(config[key]) ?? []);
++    const candidates = normalizeModelList([
++        ...(configuredModel && !isDisallowedModel(configuredModel) ? [configuredModel] : []),
++        ...ladder.filter((model) => !isDisallowedModel(model)),
++    ]);
++    return candidates.length > 0 ? candidates : [DEFAULT_MODEL];
++}
++function summarizeFailure(text) {
++    if (!text)
++        return "Hermes returned an unknown model execution failure.";
++    const lines = text
++        .split("\n")
++        .map((line) => line.trim())
++        .filter(Boolean);
++    return lines.slice(0, 6).join("\n").slice(0, 1200);
++}
++function classifyAttemptFailure({ stdout, stderr, parsed, result, model, provider, }) {
++    if (result.timedOut) {
++        return {
++            retryable: false,
++            errorCode: "timeout",
++            message: `Hermes timed out while running ${model} via ${provider}.`,
++        };
++    }
++    const combined = [
++        parsed.errorMessage,
++        parsed.response,
++        stderr,
++        stdout,
++    ]
++        .filter((value) => typeof value === "string" && value.trim().length > 0)
++        .join("\n");
++    if (!combined && (result.exitCode == null || result.exitCode === 0)) {
++        return null;
++    }
++    const normalized = combined.toLowerCase();
++    if (/http\s*429|ratelimiterror|rate limit exceeded|free-models-per-|quota/i.test(combined)) {
++        return {
++            retryable: true,
++            errorCode: "rate_limited",
++            message: summarizeFailure(parsed.response || parsed.errorMessage || combined),
++        };
++    }
++    if (/anthropic|claude/i.test(normalized)
++        && /(credential|api key|auth|unauthorized|forbidden|missing|not found)/i.test(normalized)) {
++        return {
++            retryable: true,
++            errorCode: "provider_auth_failed",
++            message: summarizeFailure(parsed.response || parsed.errorMessage || combined),
++        };
++    }
++    if (/api call failed after \d+ retries|final error:/i.test(normalized)) {
++        return {
++            retryable: false,
++            errorCode: "model_execution_failed",
++            message: summarizeFailure(parsed.response || parsed.errorMessage || combined),
++        };
++    }
++    if (result.exitCode != null && result.exitCode !== 0) {
++        return {
++            retryable: false,
++            errorCode: "adapter_failed",
++            message: summarizeFailure(parsed.errorMessage || combined || `Hermes exited with code ${result.exitCode}.`),
++        };
++    }
++    if (parsed.errorMessage) {
++        return {
++            retryable: false,
++            errorCode: "adapter_failed",
++            message: summarizeFailure(parsed.errorMessage),
++        };
++    }
++    return null;
++}
++const MODEL_LADDER_CONFIG_KEYS = [
++    "blueprintHermesModelLadder",
++    "modelLadder",
++    "fallbackModels",
++];
+ // ---------------------------------------------------------------------------
+ // Wake-up prompt builder
  // ---------------------------------------------------------------------------
  const DEFAULT_PROMPT_TEMPLATE = `You are "{{agentName}}", an AI agent employee in a Paperclip-managed company.
  
@@ -92,3 +246,308 @@ index e96d5c9c0d175a06c668406ba57ac8f5ba750901..67ce7508f7fb02f87b97456b3f872451
  {{/noTask}}`;
  function buildPrompt(ctx, config) {
      const template = cfgString(config.promptTemplate) || DEFAULT_PROMPT_TEMPLATE;
+@@ -245,9 +346,7 @@
+ // ---------------------------------------------------------------------------
+ export async function execute(ctx) {
+     const config = (ctx.agent?.adapterConfig ?? {});
+-    // ── Resolve configuration ──────────────────────────────────────────────
+     const hermesCmd = cfgString(config.hermesCommand) || HERMES_CLI;
+-    const model = cfgString(config.model) || DEFAULT_MODEL;
+     const timeoutSec = cfgNumber(config.timeoutSec) || DEFAULT_TIMEOUT_SEC;
+     const graceSec = cfgNumber(config.graceSec) || DEFAULT_GRACE_SEC;
+     const maxTurns = cfgNumber(config.maxTurnsPerRun);
+@@ -256,18 +355,10 @@
+     const persistSession = cfgBoolean(config.persistSession) !== false;
+     const worktreeMode = cfgBoolean(config.worktreeMode) === true;
+     const checkpoints = cfgBoolean(config.checkpoints) === true;
+-    // ── Resolve provider (defense in depth) ────────────────────────────────
+-    // Priority chain:
+-    //   1. Explicit provider in adapterConfig (user override)
+-    //   2. Provider from ~/.hermes/config.yaml (detected at runtime)
+-    //   3. Provider inferred from model name prefix
+-    //   4. "auto" (let Hermes decide)
+-    //
+-    // This ensures that even if the agent was created before provider tracking
+-    // was added, or if the model was changed without updating provider, the
+-    // correct provider is still used.
+-    let detectedConfig = null;
+     const explicitProvider = cfgString(config.provider);
++    const prompt = buildPrompt(ctx, config);
++    const useQuiet = cfgBoolean(config.quiet) !== false; // default true
++    let detectedConfig = null;
+     if (!explicitProvider) {
+         try {
+             detectedConfig = await detectModel();
+@@ -276,58 +367,7 @@
+             // Non-fatal — detection failure shouldn't block execution
+         }
+     }
+-    const { provider: resolvedProvider, resolvedFrom } = resolveProvider({
+-        explicitProvider,
+-        detectedProvider: detectedConfig?.provider,
+-        detectedModel: detectedConfig?.model,
+-        model,
+-    });
+-    // ── Build prompt ───────────────────────────────────────────────────────
+-    const prompt = buildPrompt(ctx, config);
+-    // ── Build command args ─────────────────────────────────────────────────
+-    // Use -Q (quiet) to get clean output: just response + session_id line
+-    const useQuiet = cfgBoolean(config.quiet) !== false; // default true
+-    const args = ["chat", "-q", prompt];
+-    if (useQuiet)
+-        args.push("-Q");
+-    if (model) {
+-        args.push("-m", model);
+-    }
+-    // Always pass --provider when we have a resolved one (not "auto").
+-    // "auto" means Hermes will decide on its own — no need to pass it.
+-    if (resolvedProvider !== "auto") {
+-        args.push("--provider", resolvedProvider);
+-    }
+-    if (toolsets) {
+-        args.push("-t", toolsets);
+-    }
+-    if (maxTurns && maxTurns > 0) {
+-        args.push("--max-turns", String(maxTurns));
+-    }
+-    if (worktreeMode)
+-        args.push("-w");
+-    if (checkpoints)
+-        args.push("--checkpoints");
+-    if (cfgBoolean(config.verbose) === true)
+-        args.push("-v");
+-    // Tag sessions as "tool" source so they don't clutter the user's session history.
+-    // Requires hermes-agent >= PR #3255 (feat/session-source-tag).
+-    args.push("--source", "tool");
+-    // Bypass Hermes dangerous-command approval prompts.
+-    // Paperclip agents run as non-interactive subprocesses with no TTY,
+-    // so approval prompts would always timeout and deny legitimate commands
+-    // (curl, python3 -c, etc.). Agents operate in a sandbox — the approval
+-    // system is designed for human-attended interactive sessions.
+-    args.push("--yolo");
+-    // Session resume
+-    const prevSessionId = cfgString(ctx.runtime?.sessionParams?.sessionId);
+-    if (persistSession && prevSessionId) {
+-        args.push("--resume", prevSessionId);
+-    }
+-    if (extraArgs?.length) {
+-        args.push(...extraArgs);
+-    }
+-    // ── Build environment ──────────────────────────────────────────────────
++    const modelCandidates = resolveModelCandidates(config);
+     const env = {
+         ...process.env,
+         ...buildPaperclipEnv(ctx.agent),
+@@ -341,7 +381,6 @@
+     if (userEnv && typeof userEnv === "object") {
+         Object.assign(env, userEnv);
+     }
+-    // ── Resolve working directory ──────────────────────────────────────────
+     const cwd = cfgString(config.cwd) || cfgString(ctx.config?.workspaceDir) || ".";
+     try {
+         await ensureAbsoluteDirectory(cwd);
+@@ -349,22 +388,9 @@
+     catch {
+         // Non-fatal
+     }
+-    // ── Log start ──────────────────────────────────────────────────────────
+-    await ctx.onLog("stdout", `[hermes] Starting Hermes Agent (model=${model}, provider=${resolvedProvider} [${resolvedFrom}], timeout=${timeoutSec}s${maxTurns ? `, max_turns=${maxTurns}` : ""})\n`);
+-    if (prevSessionId) {
+-        await ctx.onLog("stdout", `[hermes] Resuming session: ${prevSessionId}\n`);
+-    }
+-    // ── Execute ────────────────────────────────────────────────────────────
+-    // Hermes writes non-error noise to stderr (MCP init, INFO logs, etc).
+-    // Paperclip renders all stderr as red/error in the UI.
+-    // Wrap onLog to reclassify benign stderr lines as stdout.
+     const wrappedOnLog = async (stream, chunk) => {
+         if (stream === "stderr") {
+             const trimmed = chunk.trimEnd();
+-            // Benign patterns that should NOT appear as errors:
+-            // - Structured log lines: [timestamp] INFO/DEBUG/WARN: ...
+-            // - MCP server registration messages
+-            // - Python import/site noise
+             const isBenign = /^\[?\d{4}[-/]\d{2}[-/]\d{2}T/.test(trimmed) || // structured timestamps
+                 /^[A-Z]+:\s+(INFO|DEBUG|WARN|WARNING)\b/.test(trimmed) || // log levels
+                 /Successfully registered all tools/.test(trimmed) ||
+@@ -377,52 +403,134 @@
+         }
+         return ctx.onLog(stream, chunk);
+     };
+-    const result = await runChildProcess(ctx.runId, hermesCmd, args, {
+-        cwd,
+-        env,
+-        timeoutSec,
+-        graceSec,
+-        onLog: wrappedOnLog,
+-    });
+-    // ── Parse output ───────────────────────────────────────────────────────
+-    const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
+-    await ctx.onLog("stdout", `[hermes] Exit code: ${result.exitCode ?? "null"}, timed out: ${result.timedOut}\n`);
+-    if (parsed.sessionId) {
+-        await ctx.onLog("stdout", `[hermes] Session: ${parsed.sessionId}\n`);
++    const prevSessionId = cfgString(ctx.runtime?.sessionParams?.sessionId);
++    const attemptedModels = [];
++    const failedAttempts = [];
++    for (let index = 0; index < modelCandidates.length; index += 1) {
++        const model = modelCandidates[index];
++        attemptedModels.push(model);
++        const { provider: resolvedProvider, resolvedFrom } = resolveProvider({
++            explicitProvider,
++            detectedProvider: detectedConfig?.provider,
++            detectedModel: detectedConfig?.model,
++            model,
++        });
++        const args = ["chat", "-q", prompt];
++        if (useQuiet)
++            args.push("-Q");
++        args.push("-m", model);
++        if (resolvedProvider !== "auto") {
++            args.push("--provider", resolvedProvider);
++        }
++        if (toolsets) {
++            args.push("-t", toolsets);
++        }
++        if (maxTurns && maxTurns > 0) {
++            args.push("--max-turns", String(maxTurns));
++        }
++        if (worktreeMode)
++            args.push("-w");
++        if (checkpoints)
++            args.push("--checkpoints");
++        if (cfgBoolean(config.verbose) === true)
++            args.push("-v");
++        args.push("--source", "tool");
++        args.push("--yolo");
++        if (persistSession && prevSessionId && index === 0) {
++            args.push("--resume", prevSessionId);
++        }
++        if (extraArgs?.length) {
++            args.push(...extraArgs);
++        }
++        await ctx.onLog("stdout", `[hermes] Starting Hermes Agent (${index + 1}/${modelCandidates.length}, model=${model}, provider=${resolvedProvider} [${resolvedFrom}], timeout=${timeoutSec}s${maxTurns ? `, max_turns=${maxTurns}` : ""})\n`);
++        if (persistSession && prevSessionId && index === 0) {
++            await ctx.onLog("stdout", `[hermes] Resuming session: ${prevSessionId}\n`);
++        }
++        const result = await runChildProcess(ctx.runId, hermesCmd, args, {
++            cwd,
++            env,
++            timeoutSec,
++            graceSec,
++            onLog: wrappedOnLog,
++        });
++        const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
++        await ctx.onLog("stdout", `[hermes] Exit code: ${result.exitCode ?? "null"}, timed out: ${result.timedOut}\n`);
++        if (parsed.sessionId) {
++            await ctx.onLog("stdout", `[hermes] Session: ${parsed.sessionId}\n`);
++        }
++        const attemptFailure = classifyAttemptFailure({
++            stdout: result.stdout || "",
++            stderr: result.stderr || "",
++            parsed,
++            result,
++            model,
++            provider: resolvedProvider,
++        });
++        if (attemptFailure) {
++            failedAttempts.push({
++                model,
++                provider: resolvedProvider,
++                errorCode: attemptFailure.errorCode,
++                message: attemptFailure.message,
++            });
++            const hasNextModel = index < modelCandidates.length - 1;
++            if (attemptFailure.retryable && hasNextModel) {
++                await ctx.onLog("stdout", `[hermes] Model ${model} failed with a retriable error (${attemptFailure.errorCode}). Falling through to ${modelCandidates[index + 1]}.\n`);
++                continue;
++            }
++        }
++        const executionResult = {
++            exitCode: result.exitCode,
++            signal: result.signal,
++            timedOut: result.timedOut,
++            provider: resolvedProvider,
++            model,
++        };
++        if (attemptFailure) {
++            executionResult.errorCode = attemptFailure.errorCode;
++            executionResult.errorMessage = attemptFailure.message;
++        }
++        else if (parsed.errorMessage) {
++            executionResult.errorMessage = parsed.errorMessage;
++        }
++        if (parsed.usage) {
++            executionResult.usage = parsed.usage;
++        }
++        if (parsed.costUsd !== undefined) {
++            executionResult.costUsd = parsed.costUsd;
++        }
++        if (parsed.response) {
++            executionResult.summary = parsed.response.slice(0, 2000);
++        }
++        executionResult.resultJson = {
++            result: parsed.response || "",
++            session_id: parsed.sessionId || null,
++            usage: parsed.usage || null,
++            cost_usd: parsed.costUsd ?? null,
++            attempted_models: attemptedModels,
++            failed_attempts: failedAttempts,
++        };
++        if (persistSession && parsed.sessionId && !attemptFailure) {
++            executionResult.sessionParams = { sessionId: parsed.sessionId };
++            executionResult.sessionDisplayId = parsed.sessionId.slice(0, 16);
++        }
++        return executionResult;
+     }
+-    // ── Build result ───────────────────────────────────────────────────────
+-    const executionResult = {
+-        exitCode: result.exitCode,
+-        signal: result.signal,
+-        timedOut: result.timedOut,
+-        provider: resolvedProvider,
+-        model,
++    return {
++        exitCode: 1,
++        timedOut: false,
++        provider: explicitProvider || "openrouter",
++        model: modelCandidates[modelCandidates.length - 1] || DEFAULT_MODEL,
++        errorCode: "model_ladder_exhausted",
++        errorMessage: summarizeFailure(failedAttempts[failedAttempts.length - 1]?.message || "Hermes exhausted the configured model ladder."),
++        resultJson: {
++            result: "",
++            session_id: null,
++            usage: null,
++            cost_usd: null,
++            attempted_models: attemptedModels,
++            failed_attempts: failedAttempts,
++        },
+     };
+-    if (parsed.errorMessage) {
+-        executionResult.errorMessage = parsed.errorMessage;
+-    }
+-    if (parsed.usage) {
+-        executionResult.usage = parsed.usage;
+-    }
+-    if (parsed.costUsd !== undefined) {
+-        executionResult.costUsd = parsed.costUsd;
+-    }
+-    // Summary from agent response
+-    if (parsed.response) {
+-        executionResult.summary = parsed.response.slice(0, 2000);
+-    }
+-    // Set resultJson so Paperclip can persist run metadata (used for UI display + auto-comments)
+-    executionResult.resultJson = {
+-        result: parsed.response || "",
+-        session_id: parsed.sessionId || null,
+-        usage: parsed.usage || null,
+-        cost_usd: parsed.costUsd ?? null,
+-    };
+-    // Store session ID for next run
+-    if (persistSession && parsed.sessionId) {
+-        executionResult.sessionParams = { sessionId: parsed.sessionId };
+-        executionResult.sessionDisplayId = parsed.sessionId.slice(0, 16);
+-    }
+-    return executionResult;
+ }
+-//# sourceMappingURL=execute.js.map
+\ No newline at end of file
++//# sourceMappingURL=execute.js.map

@@ -21,6 +21,7 @@ export {
   runDatabaseBackup,
   runDatabaseRestore,
   formatDatabaseBackupResult,
+  pruneDatabaseBackups,
   type RunDatabaseBackupOptions,
   type RunDatabaseBackupResult,
   type RunDatabaseRestoreOptions,

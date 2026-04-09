@@ -146,6 +146,14 @@ function defaultExecutionPolicy(primaryAdapterType: string): AgentExecutionPolic
     };
   }
 
+  if (primaryAdapterType === "hermes_local") {
+    return {
+      mode: "prefer_available",
+      compatibleAdapterTypes: ["hermes_local", "codex_local"],
+      preferredAdapterTypes: ["hermes_local", "codex_local"],
+    };
+  }
+
   return {
     mode: "prefer_available",
     compatibleAdapterTypes: dedupeAdapterTypes([

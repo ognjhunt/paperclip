@@ -3,8 +3,9 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { logger } from "../middleware/logger.js";
 
-export type RunLogStoreType = "local_file";
+export type RunLogStoreType = "local_file" | "disabled";
 
 export interface RunLogHandle {
   store: RunLogStoreType;
@@ -37,6 +38,22 @@ export interface RunLogStore {
   read(handle: RunLogHandle, opts?: RunLogReadOptions): Promise<RunLogReadResult>;
 }
 
+const RUN_LOG_STORAGE_PRESSURE_CODES = new Set([
+  "EDQUOT",
+  "EFBIG",
+  "EIO",
+  "EMFILE",
+  "ENFILE",
+  "ENOSPC",
+]);
+
+const APPEND_BACKOFF_MS = 5 * 60 * 1_000;
+
+export function isRunLogStoragePressureError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return typeof code === "string" && RUN_LOG_STORAGE_PRESSURE_CODES.has(code);
+}
+
 function safeSegments(...segments: string[]) {
   return segments.map((segment) => segment.replace(/[^a-zA-Z0-9._-]/g, "_"));
 }
@@ -51,6 +68,20 @@ function resolveWithin(basePath: string, relativePath: string) {
 }
 
 function createLocalFileRunLogStore(basePath: string): RunLogStore {
+  let writesSuppressedUntil = 0;
+
+  function suppressWrites(error: unknown, logRef: string | null) {
+    writesSuppressedUntil = Date.now() + APPEND_BACKOFF_MS;
+    logger.warn(
+      {
+        err: error,
+        logRef,
+        retryAt: new Date(writesSuppressedUntil).toISOString(),
+      },
+      "Run log persistence disabled temporarily after storage pressure",
+    );
+  }
+
   async function ensureDir(relativeDir: string) {
     const dir = resolveWithin(basePath, relativeDir);
     await fs.mkdir(dir, { recursive: true });
@@ -98,23 +129,39 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
       const runId = safeSegments(input.runId)[0]!;
       const relDir = path.join(companyId, agentId);
       const relPath = path.join(relDir, `${runId}.ndjson`);
-      await ensureDir(relDir);
-
-      const absPath = resolveWithin(basePath, relPath);
-      await fs.writeFile(absPath, "", "utf8");
+      try {
+        await ensureDir(relDir);
+        const absPath = resolveWithin(basePath, relPath);
+        await fs.writeFile(absPath, "", "utf8");
+      } catch (error) {
+        if (isRunLogStoragePressureError(error)) {
+          suppressWrites(error, relPath);
+          return { store: "disabled", logRef: relPath };
+        }
+        throw error;
+      }
 
       return { store: "local_file", logRef: relPath };
     },
 
     async append(handle, event) {
       if (handle.store !== "local_file") return;
+      if (Date.now() < writesSuppressedUntil) return;
       const absPath = resolveWithin(basePath, handle.logRef);
       const line = JSON.stringify({
         ts: event.ts,
         stream: event.stream,
         chunk: event.chunk,
       });
-      await fs.appendFile(absPath, `${line}\n`, "utf8");
+      try {
+        await fs.appendFile(absPath, `${line}\n`, "utf8");
+      } catch (error) {
+        if (isRunLogStoragePressureError(error)) {
+          suppressWrites(error, handle.logRef);
+          return;
+        }
+        throw error;
+      }
     },
 
     async finalize(handle) {
@@ -122,7 +169,13 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
         return { bytes: 0, compressed: false };
       }
       const absPath = resolveWithin(basePath, handle.logRef);
-      const stat = await fs.stat(absPath).catch(() => null);
+      const stat = await fs.stat(absPath).catch((error) => {
+        if (isRunLogStoragePressureError(error)) {
+          suppressWrites(error, handle.logRef);
+          return null;
+        }
+        throw error;
+      });
       if (!stat) throw notFound("Run log not found");
 
       const hash = await sha256File(absPath);
@@ -153,4 +206,3 @@ export function getRunLogStore() {
   cachedStore = createLocalFileRunLogStore(basePath);
   return cachedStore;
 }
-
