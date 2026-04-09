@@ -71,7 +71,11 @@ function timestamp(date: Date = new Date()): string {
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }
 
-function pruneOldBackups(backupDir: string, retentionDays: number, filenamePrefix: string): number {
+export function pruneDatabaseBackups(
+  backupDir: string,
+  retentionDays: number,
+  filenamePrefix: string = "paperclip",
+): number {
   if (!existsSync(backupDir)) return 0;
   const safeRetention = Math.max(1, Math.trunc(retentionDays));
   const cutoff = Date.now() - safeRetention * 24 * 60 * 60 * 1000;
@@ -540,7 +544,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     tempBackupFile = null;
 
     const sizeBytes = statSync(backupFile).size;
-    const prunedCount = pruneOldBackups(opts.backupDir, retentionDays, filenamePrefix);
+    const prunedCount = pruneDatabaseBackups(opts.backupDir, retentionDays, filenamePrefix);
 
     return {
       backupFile,
