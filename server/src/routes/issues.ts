@@ -1197,7 +1197,13 @@ export function issueRoutes(db: Db, storage: StorageService) {
           payload: { issueId: issue.id, mutation: "checkout" },
           requestedByActorType: actor.actorType,
           requestedByActorId: actor.actorId,
-          contextSnapshot: { issueId: issue.id, source: "issue.checkout" },
+          contextSnapshot: {
+            issueId: issue.id,
+            taskId: issue.id,
+            taskKey: issue.id,
+            source: "issue.checkout",
+            wakeReason: "issue_checked_out",
+          },
         })
         .catch((err) => logger.warn({ err, issueId: issue.id }, "failed to wake assignee on issue checkout"));
     }

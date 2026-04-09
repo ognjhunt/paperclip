@@ -564,6 +564,11 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             agentId,
             companyId: cid,
             status: "active",
+            taskKey: opts?.taskKey ?? null,
+            sessionDisplayId: null,
+            sessionParamsJson: null,
+            lastRunId: null,
+            lastError: null,
             createdAt: new Date().toISOString(),
           };
           sessions.set(session.sessionId, session);

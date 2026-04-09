@@ -81,6 +81,24 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "pi_local",
 ]);
 
+export function deriveAgentStatusFromActiveRunCounts(input: {
+  queuedCount: number;
+  runningCount: number;
+  outcome?: "succeeded" | "failed" | "cancelled" | "timed_out";
+  fallbackStatus?: "idle" | "error" | "running";
+}) {
+  if (input.runningCount > 0 || input.queuedCount > 0) {
+    return "running" as const;
+  }
+  if (input.fallbackStatus) {
+    return input.fallbackStatus;
+  }
+  if (input.outcome === "succeeded" || input.outcome === "cancelled") {
+    return "idle" as const;
+  }
+  return "error" as const;
+}
+
 async function logAgentRunFailureActivity(
   db: Db,
   input: {
@@ -1675,6 +1693,79 @@ export function heartbeatService(db: Db) {
     return Number(count ?? 0);
   }
 
+  async function countActiveRunsForAgent(agentId: string) {
+    const [{ queuedCount, runningCount }] = await db
+      .select({
+        queuedCount: sql<number>`count(*) filter (where ${heartbeatRuns.status} = 'queued')`,
+        runningCount: sql<number>`count(*) filter (where ${heartbeatRuns.status} = 'running')`,
+      })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, ["queued", "running"])));
+    return {
+      queuedCount: Number(queuedCount ?? 0),
+      runningCount: Number(runningCount ?? 0),
+    };
+  }
+
+  async function reconcileAgentStatusFromActiveRuns(
+    agentId: string,
+    options?: {
+      outcome?: "succeeded" | "failed" | "cancelled" | "timed_out";
+      fallbackStatus?: "idle" | "error" | "running";
+      touchHeartbeatAt?: boolean;
+    },
+  ) {
+    const existing = await getAgent(agentId);
+    if (!existing) return null;
+
+    if (existing.status === "paused" || existing.status === "terminated") {
+      return null;
+    }
+
+    const { queuedCount, runningCount } = await countActiveRunsForAgent(agentId);
+    const nextStatus = deriveAgentStatusFromActiveRunCounts({
+      queuedCount,
+      runningCount,
+      outcome: options?.outcome,
+      fallbackStatus: options?.fallbackStatus,
+    });
+
+    if (
+      existing.status === nextStatus
+      && !options?.touchHeartbeatAt
+    ) {
+      return existing;
+    }
+
+    const updated = await db
+      .update(agents)
+      .set({
+        status: nextStatus,
+        ...(options?.touchHeartbeatAt ? { lastHeartbeatAt: new Date() } : {}),
+        updatedAt: new Date(),
+      })
+      .where(eq(agents.id, agentId))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+
+    if (updated) {
+      publishLiveEvent({
+        companyId: updated.companyId,
+        type: "agent.status",
+        payload: {
+          agentId: updated.id,
+          status: updated.status,
+          lastHeartbeatAt: updated.lastHeartbeatAt
+            ? new Date(updated.lastHeartbeatAt).toISOString()
+            : null,
+          outcome: options?.outcome ?? null,
+        },
+      });
+    }
+
+    return updated;
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -1727,6 +1818,9 @@ export function heartbeatService(db: Db) {
     });
 
     await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
+    await reconcileAgentStatusFromActiveRuns(agent.id, {
+      fallbackStatus: "running",
+    });
     return claimed;
   }
 
@@ -1734,46 +1828,10 @@ export function heartbeatService(db: Db) {
     agentId: string,
     outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
   ) {
-    const existing = await getAgent(agentId);
-    if (!existing) return;
-
-    if (existing.status === "paused" || existing.status === "terminated") {
-      return;
-    }
-
-    const runningCount = await countRunningRunsForAgent(agentId);
-    const nextStatus =
-      runningCount > 0
-        ? "running"
-        : outcome === "succeeded" || outcome === "cancelled"
-          ? "idle"
-          : "error";
-
-    const updated = await db
-      .update(agents)
-      .set({
-        status: nextStatus,
-        lastHeartbeatAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(eq(agents.id, agentId))
-      .returning()
-      .then((rows) => rows[0] ?? null);
-
-    if (updated) {
-      publishLiveEvent({
-        companyId: updated.companyId,
-        type: "agent.status",
-        payload: {
-          agentId: updated.id,
-          status: updated.status,
-          lastHeartbeatAt: updated.lastHeartbeatAt
-            ? new Date(updated.lastHeartbeatAt).toISOString()
-            : null,
-          outcome,
-        },
-      });
-    }
+    await reconcileAgentStatusFromActiveRuns(agentId, {
+      outcome,
+      touchHeartbeatAt: true,
+    });
   }
 
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
@@ -3489,6 +3547,9 @@ export function heartbeatService(db: Db) {
         },
       });
 
+      await reconcileAgentStatusFromActiveRuns(agent.id, {
+        fallbackStatus: "running",
+      });
       await startNextQueuedRunForAgent(agent.id);
       return newRun;
     }
@@ -3597,6 +3658,9 @@ export function heartbeatService(db: Db) {
       },
     });
 
+    await reconcileAgentStatusFromActiveRuns(agent.id, {
+      fallbackStatus: "running",
+    });
     await startNextQueuedRunForAgent(agent.id);
 
     return newRun;
@@ -3879,6 +3943,9 @@ export function heartbeatService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (!updated) return null;
+      await reconcileAgentStatusFromActiveRuns(agentId, {
+        fallbackStatus: "idle",
+      });
       return {
         ...updated,
         sessionDisplayId: null,

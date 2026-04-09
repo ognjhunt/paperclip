@@ -944,6 +944,11 @@ export interface AgentSession {
   agentId: string;
   companyId: string;
   status: "active" | "closed";
+  taskKey?: string | null;
+  sessionDisplayId?: string | null;
+  sessionParamsJson?: Record<string, unknown> | null;
+  lastRunId?: string | null;
+  lastError?: string | null;
   createdAt: string;
 }
 
@@ -955,8 +960,8 @@ export interface AgentSessionEvent {
   sessionId: string;
   runId: string;
   seq: number;
-  /** The kind of event: "chunk" for output data, "status" for run state changes, "done" for end-of-stream, "error" for failures. */
-  eventType: "chunk" | "status" | "done" | "error";
+  /** The kind of event: "chunk" for output data, "status" for run state changes, "trace" for structured runtime milestones, "checkpoint" for resumable state saves, "compaction" for session rotation, "done" for end-of-stream, "error" for failures. */
+  eventType: "chunk" | "status" | "trace" | "checkpoint" | "compaction" | "done" | "error";
   stream: "stdout" | "stderr" | "system" | null;
   message: string | null;
   payload: Record<string, unknown> | null;

@@ -682,11 +682,33 @@ export interface WorkerToHostMethods {
   // Agent Sessions
   "agents.sessions.create": [
     params: { agentId: string; companyId: string; taskKey?: string; reason?: string },
-    result: { sessionId: string; agentId: string; companyId: string; status: "active" | "closed"; createdAt: string },
+    result: {
+      sessionId: string;
+      agentId: string;
+      companyId: string;
+      status: "active" | "closed";
+      taskKey?: string | null;
+      sessionDisplayId?: string | null;
+      sessionParamsJson?: Record<string, unknown> | null;
+      lastRunId?: string | null;
+      lastError?: string | null;
+      createdAt: string;
+    },
   ];
   "agents.sessions.list": [
     params: { agentId: string; companyId: string },
-    result: Array<{ sessionId: string; agentId: string; companyId: string; status: "active" | "closed"; createdAt: string }>,
+    result: Array<{
+      sessionId: string;
+      agentId: string;
+      companyId: string;
+      status: "active" | "closed";
+      taskKey?: string | null;
+      sessionDisplayId?: string | null;
+      sessionParamsJson?: Record<string, unknown> | null;
+      lastRunId?: string | null;
+      lastError?: string | null;
+      createdAt: string;
+    }>,
   ];
   "agents.sessions.sendMessage": [
     params: { sessionId: string; companyId: string; prompt: string; reason?: string },

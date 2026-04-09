@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
+  agentRuntimeState,
   agentWakeupRequests,
   companies,
   createDb,
@@ -48,6 +49,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       child.kill("SIGKILL");
     }
     childProcesses.clear();
+    await db.delete(agentRuntimeState);
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
@@ -67,6 +69,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   async function seedRunFixture(input?: {
     adapterType?: string;
+    agentStatus?: "idle" | "running" | "error" | "paused";
     runStatus?: "running" | "queued" | "failed";
     processPid?: number | null;
     processLossRetryCount?: number;
@@ -94,7 +97,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       companyId,
       name: "CodexCoder",
       role: "engineer",
-      status: "paused",
+      status: input?.agentStatus ?? "paused",
       adapterType: input?.adapterType ?? "codex_local",
       adapterConfig: {},
       runtimeConfig: {},
@@ -251,5 +254,41 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const run = await heartbeat.getRun(runId);
     expect(run?.errorCode).toBeNull();
     expect(run?.error).toBeNull();
+  });
+
+  it("clears stale agent error status to running when a queued run still exists", async () => {
+    const { agentId } = await seedRunFixture({
+      agentStatus: "error",
+      runStatus: "queued",
+      includeIssue: false,
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resetRuntimeSession(agentId);
+
+    const agent = await db
+      .select()
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(agent?.status).toBe("running");
+  });
+
+  it("clears stale agent error status to idle when no active runs remain", async () => {
+    const { agentId } = await seedRunFixture({
+      agentStatus: "error",
+      runStatus: "failed",
+      includeIssue: false,
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resetRuntimeSession(agentId);
+
+    const agent = await db
+      .select()
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(agent?.status).toBe("idle");
   });
 });

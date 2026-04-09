@@ -1021,6 +1021,11 @@ export function buildHostServices(
           agentId: params.agentId,
           companyId,
           status: "active" as const,
+          taskKey: row!.taskKey,
+          sessionDisplayId: row!.sessionDisplayId ?? null,
+          sessionParamsJson: row!.sessionParamsJson ?? null,
+          lastRunId: row!.lastRunId ?? null,
+          lastError: row!.lastError ?? null,
           createdAt: row!.createdAt.toISOString(),
         };
       },
@@ -1045,6 +1050,11 @@ export function buildHostServices(
           agentId: row.agentId,
           companyId: row.companyId,
           status: "active" as const,
+          taskKey: row.taskKey,
+          sessionDisplayId: row.sessionDisplayId ?? null,
+          sessionParamsJson: row.sessionParamsJson ?? null,
+          lastRunId: row.lastRunId ?? null,
+          lastError: row.lastError ?? null,
           createdAt: row.createdAt.toISOString(),
         }));
       },
