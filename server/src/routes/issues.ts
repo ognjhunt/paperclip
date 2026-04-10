@@ -233,6 +233,43 @@ export function issueRoutes(db: Db, storage: StorageService) {
     return { project, goal: null };
   }
 
+  async function handleIssueRelease(req: Request, res: Response) {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
+    const actorRunId = requireAgentRunId(req, res);
+    if (req.actor.type === "agent" && !actorRunId) return;
+
+    const released = await svc.release(
+      id,
+      req.actor.type === "agent" ? req.actor.agentId : undefined,
+      actorRunId,
+    );
+    if (!released) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: released.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.released",
+      entityType: "issue",
+      entityId: released.id,
+    });
+
+    res.json(released);
+  }
+
   // Resolve issue identifiers (e.g. "PAP-39") to UUIDs for all /issues/:id routes
   router.param("id", async (req, res, next, rawId) => {
     try {
@@ -1256,42 +1293,9 @@ export function issueRoutes(db: Db, storage: StorageService) {
     res.json(updated);
   });
 
-  router.post("/issues/:id/release", async (req, res) => {
-    const id = req.params.id as string;
-    const existing = await svc.getById(id);
-    if (!existing) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
-    if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
-    const actorRunId = requireAgentRunId(req, res);
-    if (req.actor.type === "agent" && !actorRunId) return;
-
-    const released = await svc.release(
-      id,
-      req.actor.type === "agent" ? req.actor.agentId : undefined,
-      actorRunId,
-    );
-    if (!released) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-
-    const actor = getActorInfo(req);
-    await logActivity(db, {
-      companyId: released.companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      action: "issue.released",
-      entityType: "issue",
-      entityId: released.id,
-    });
-
-    res.json(released);
-  });
+  router.post("/issues/:id/release", handleIssueRelease);
+  // Compatibility alias for agents that attempt to "undo" checkout with REST-style delete semantics.
+  router.delete("/issues/:id/checkout", handleIssueRelease);
 
   router.get("/issues/:id/comments", async (req, res) => {
     const id = req.params.id as string;

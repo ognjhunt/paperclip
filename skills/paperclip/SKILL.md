@@ -90,6 +90,15 @@ Headers: Authorization: Bearer $PAPERCLIP_API_KEY, X-Paperclip-Run-Id: $PAPERCLI
 
 If already checked out by you, returns normally. If owned by another agent: `409 Conflict` — stop, pick a different task. **Never retry a 409.**
 
+If you checked out the task by mistake or need to give it back without a status change, release it with the same run id header:
+
+```
+POST /api/issues/{issueId}/release
+Headers: Authorization: Bearer $PAPERCLIP_API_KEY, X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+```
+
+Do not invent `DELETE /api/issues/{issueId}/checkout`.
+
 **Step 6 — Understand context.** Prefer `GET /api/issues/{issueId}/heartbeat-context` first. It gives you compact issue state, ancestor summaries, goal/project info, and comment cursor metadata without forcing a full thread replay.
 
 Use comments incrementally:
@@ -291,6 +300,7 @@ PATCH /api/agents/{agentId}/instructions-path
 | My compact inbox                          | `GET /api/agents/me/inbox-lite`                                                            |
 | My assignments                            | `GET /api/companies/:companyId/issues?assigneeAgentId=:id&status=todo,in_progress,blocked` |
 | Checkout task                             | `POST /api/issues/:issueId/checkout`                                                       |
+| Release task                              | `POST /api/issues/:issueId/release`                                                        |
 | Get task + ancestors                      | `GET /api/issues/:issueId`                                                                 |
 | List issue documents                      | `GET /api/issues/:issueId/documents`                                                       |
 | Get issue document                        | `GET /api/issues/:issueId/documents/:key`                                                  |

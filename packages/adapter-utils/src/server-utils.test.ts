@@ -15,6 +15,7 @@ describe("server prompt guards", () => {
     expect(note).toContain("Do not scan the inbox, backlog, or other issues");
     expect(note).toContain("GET /api/issues/{id}/heartbeat-context");
     expect(note).toContain("PATCH /api/issues/{id}");
+    expect(note).toContain("POST /api/issues/{id}/release");
   });
 
   it("renders a binding-failure guard when wake context lacks a bound issue id", () => {

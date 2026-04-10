@@ -32,6 +32,7 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 ## 5. Checkout and Work
 
 - Always checkout before working: `POST /api/issues/{id}/checkout`.
+- If you need to give a task back without changing status, use `POST /api/issues/{id}/release`.
 - Never retry a 409 -- that task belongs to someone else.
 - Do the work. Update status and comment when done.
 

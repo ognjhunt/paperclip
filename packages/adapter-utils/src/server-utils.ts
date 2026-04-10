@@ -227,7 +227,7 @@ export function renderTaskBindingGuard(context: Record<string, unknown>): string
       `- This heartbeat is bound to issue ${boundIssueId}. Treat that issue as the sole execution scope for this run unless the wake is explicitly comment-only.`,
       "- Do not scan the inbox, backlog, or other issues before handling the bound issue.",
       "- Do not update, checkout, or comment on a different issue from this run.",
-      "- Use the canonical Paperclip issue routes exactly as documented: GET /api/issues/{id}/heartbeat-context, PATCH /api/issues/{id}, POST /api/issues/{id}/checkout, GET /api/issues/{id}/comments, GET /api/issues/{id}/comments/{commentId}, POST /api/issues/{id}/comments.",
+      "- Use the canonical Paperclip issue routes exactly as documented: GET /api/issues/{id}/heartbeat-context, PATCH /api/issues/{id}, POST /api/issues/{id}/checkout, POST /api/issues/{id}/release, GET /api/issues/{id}/comments, GET /api/issues/{id}/comments/{commentId}, POST /api/issues/{id}/comments.",
     ].join("\n");
   }
 

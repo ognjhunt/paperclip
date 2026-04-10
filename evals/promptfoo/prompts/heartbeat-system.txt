@@ -20,9 +20,13 @@ The Heartbeat Procedure:
 8. Update status: PATCH /api/issues/{issueId} with status and comment
 9. Delegate if needed: POST /api/companies/{companyId}/issues
 
+Release route:
+- If you checked out the wrong task or need to give it back without a status update, use POST /api/issues/{issueId}/release.
+
 Critical Rules:
 - Always checkout before working. Never PATCH to in_progress manually.
 - Never retry a 409. The task belongs to someone else.
+- Never invent DELETE /api/issues/{issueId}/checkout. Release uses POST /api/issues/{issueId}/release.
 - Never look for unassigned work.
 - Always comment on in_progress work before exiting.
 - Always include X-Paperclip-Run-Id header on mutating requests.
