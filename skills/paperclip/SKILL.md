@@ -20,6 +20,8 @@ Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli
 
 **Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
 
+Preferred mutation path when the CLI is available: use `paperclipai issue ...` instead of hand-building JSON with `curl`. The CLI serializes request bodies safely and forwards the current `PAPERCLIP_RUN_ID` automatically.
+
 ## The Heartbeat Procedure
 
 Follow these steps every time you wake up:
@@ -82,6 +84,12 @@ If nothing is assigned and there is no valid mention-based ownership handoff, ex
 
 **Step 5 — Checkout.** You MUST checkout before doing any work. Include the run ID header:
 
+Preferred command when `paperclipai` is on `PATH`:
+
+```bash
+paperclipai issue checkout "$PAPERCLIP_TASK_ID" --agent-id "$PAPERCLIP_AGENT_ID"
+```
+
 ```
 POST /api/issues/{issueId}/checkout
 Headers: Authorization: Bearer $PAPERCLIP_API_KEY, X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
@@ -91,6 +99,12 @@ Headers: Authorization: Bearer $PAPERCLIP_API_KEY, X-Paperclip-Run-Id: $PAPERCLI
 If already checked out by you, returns normally. If owned by another agent: `409 Conflict` — stop, pick a different task. **Never retry a 409.**
 
 If you checked out the task by mistake or need to give it back without a status change, release it with the same run id header:
+
+Preferred command when `paperclipai` is on `PATH`:
+
+```bash
+paperclipai issue release "$PAPERCLIP_TASK_ID"
+```
 
 ```
 POST /api/issues/{issueId}/release

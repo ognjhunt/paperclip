@@ -67,7 +67,10 @@ function renderApiAccessNote(env: Record<string, string>): string {
   if (!hasNonEmptyEnvValue(env, "PAPERCLIP_API_URL") || !hasNonEmptyEnvValue(env, "PAPERCLIP_API_KEY")) return "";
   return [
     "Paperclip API access note:",
+    "Prefer the `paperclipai issue ...` CLI for checkout, release, comment, and update when it is available; it serializes JSON safely and forwards the current run id automatically.",
     "Use run_shell_command with curl to make Paperclip API requests.",
+    "Preferred checkout example:",
+    `  run_shell_command({ command: "paperclipai issue checkout \\"$PAPERCLIP_TASK_ID\\" --agent-id \\"$PAPERCLIP_AGENT_ID\\"" })`,
     "GET example:",
     `  run_shell_command({ command: "curl -s -H \\"Authorization: Bearer $PAPERCLIP_API_KEY\\" \\"$PAPERCLIP_API_URL/api/agents/me\\"" })`,
     "POST/PATCH example:",
