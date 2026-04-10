@@ -123,6 +123,41 @@ export function issueRoutes(db: Db, storage: StorageService) {
     return null;
   }
 
+  function readBoundIssueIdFromRun(run: { contextSnapshot?: Record<string, unknown> | null } | null): string | null {
+    const contextSnapshot = run?.contextSnapshot;
+    if (!contextSnapshot || typeof contextSnapshot !== "object") return null;
+
+    const taskId = contextSnapshot.taskId;
+    if (typeof taskId === "string" && taskId.trim().length > 0) return taskId.trim();
+
+    const issueId = contextSnapshot.issueId;
+    if (typeof issueId === "string" && issueId.trim().length > 0) return issueId.trim();
+
+    return null;
+  }
+
+  async function assertAgentRunIssueScope(
+    req: Request,
+    res: Response,
+    issue: { id: string; identifier?: string | null },
+  ) {
+    if (req.actor.type !== "agent") return true;
+    const runId = requireAgentRunId(req, res);
+    if (!runId) return false;
+
+    const run = await heartbeat.getRun(runId).catch(() => null);
+    const boundIssueId = readBoundIssueIdFromRun(run);
+    if (!boundIssueId || boundIssueId === issue.id) return true;
+
+    res.status(409).json({
+      error: "Agent run is bound to a different issue",
+      boundIssueId,
+      requestedIssueId: issue.id,
+      requestedIssueIdentifier: issue.identifier ?? null,
+    });
+    return false;
+  }
+
   async function assertAgentRunCheckoutOwnership(
     req: Request,
     res: Response,
@@ -348,6 +383,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (!(await assertAgentRunIssueScope(req, res, issue))) return;
     const [{ project, goal }, ancestors, mentionedProjectIds, documentPayload] = await Promise.all([
       resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
@@ -374,7 +410,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     });
   });
 
-  router.get("/issues/:id/heartbeat-context", async (req, res) => {
+  const handleHeartbeatContext = async (req: Request, res: Response) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
     if (!issue) {
@@ -382,6 +418,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (!(await assertAgentRunIssueScope(req, res, issue))) return;
 
     const wakeCommentId =
       typeof req.query.wakeCommentId === "string" && req.query.wakeCommentId.trim().length > 0
@@ -440,7 +477,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
           ? wakeComment
           : null,
     });
-  });
+  };
+
+  router.get("/issues/:id/heartbeat-context", handleHeartbeatContext);
+  router.get("/issues/heartbeat-context/:id", handleHeartbeatContext);
 
   router.get("/issues/:id/work-products", async (req, res) => {
     const id = req.params.id as string;
@@ -887,7 +927,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     res.status(201).json(issue);
   });
 
-  router.patch("/issues/:id", validate(updateIssueSchema), async (req, res) => {
+  const handleIssueUpdate = async (req: Request, res: Response) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
     if (!existing) {
@@ -895,6 +935,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    if (!(await assertAgentRunIssueScope(req, res, existing))) return;
     const assigneeWillChange =
       (req.body.assigneeAgentId !== undefined && req.body.assigneeAgentId !== existing.assigneeAgentId) ||
       (req.body.assigneeUserId !== undefined && req.body.assigneeUserId !== existing.assigneeUserId);
@@ -1096,7 +1137,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
     })();
 
     res.json({ ...issue, comment });
-  });
+  };
+
+  router.patch("/issues/:id", validate(updateIssueSchema), handleIssueUpdate);
+  router.put("/issues/:id", validate(updateIssueSchema), handleIssueUpdate);
 
   router.delete("/issues/:id", async (req, res) => {
     const id = req.params.id as string;
@@ -1145,6 +1189,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (!(await assertAgentRunIssueScope(req, res, issue))) return;
 
     if (issue.projectId) {
       const project = await projectsSvc.getById(issue.projectId);
@@ -1256,6 +1301,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (!(await assertAgentRunIssueScope(req, res, issue))) return;
     const afterCommentId =
       typeof req.query.after === "string" && req.query.after.trim().length > 0
         ? req.query.after.trim()
@@ -1291,6 +1337,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (!(await assertAgentRunIssueScope(req, res, issue))) return;
     const comment = await svc.getComment(commentId);
     if (!comment || comment.issueId !== id) {
       res.status(404).json({ error: "Comment not found" });
@@ -1307,6 +1354,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    if (!(await assertAgentRunIssueScope(req, res, issue))) return;
     if (!(await assertAgentRunCheckoutOwnership(req, res, issue))) return;
 
     const actor = getActorInfo(req);

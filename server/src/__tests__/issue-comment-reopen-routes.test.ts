@@ -19,6 +19,7 @@ const mockAccessService = vi.hoisted(() => ({
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
   reportRunActivity: vi.fn(async () => undefined),
+  getRun: vi.fn(async () => null),
 }));
 
 const mockAgentService = vi.hoisted(() => ({
@@ -142,5 +143,22 @@ describe("issue comment reopen routes", () => {
         }),
       }),
     );
+  });
+
+  it("accepts PUT /api/issues/:id as a compatibility alias for PATCH", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("todo"),
+      ...patch,
+    }));
+
+    const res = await request(createApp())
+      .put("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "hello", assigneeAgentId: "33333333-3333-4333-8333-333333333333" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith("11111111-1111-4111-8111-111111111111", {
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+    });
   });
 });

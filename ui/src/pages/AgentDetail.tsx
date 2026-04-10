@@ -23,6 +23,12 @@ import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { buildRunNarrative, buildRunReasonLabel, detectRunDiagnostic } from "../lib/run-narrative";
+import {
+  deriveEffectiveHeartbeatRun,
+  hasTerminalLifecycleEvent,
+  isLiveHeartbeatRunStatus,
+  mergeHeartbeatRunEvents,
+} from "../lib/run-status";
 import { AgentConfigForm } from "../components/AgentConfigForm";
 import { PageTabBar } from "../components/PageTabBar";
 import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
@@ -2901,9 +2907,19 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
     queryKey: queryKeys.runDetail(initialRun.id),
     queryFn: () => heartbeatsApi.get(initialRun.id),
     enabled: Boolean(initialRun.id),
+    refetchInterval: (query) => {
+      const nextRun = (query.state.data as HeartbeatRun | undefined) ?? initialRun;
+      return isLiveHeartbeatRunStatus(nextRun.status) ? 2000 : false;
+    },
   });
   const run = hydratedRun ?? initialRun;
-  const metrics = runMetrics(run);
+  const { data: runEvents = [] } = useQuery({
+    queryKey: ["run-events", run.id],
+    queryFn: () => heartbeatsApi.events(run.id, 0, 200),
+    enabled: Boolean(run.id),
+  });
+  const displayRun = useMemo(() => deriveEffectiveHeartbeatRun(run, runEvents), [run, runEvents]);
+  const metrics = runMetrics(displayRun);
   const [sessionOpen, setSessionOpen] = useState(false);
   const [claudeLoginResult, setClaudeLoginResult] = useState<ClaudeLoginResult | null>(null);
 
@@ -2917,7 +2933,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(run.companyId, run.agentId) });
     },
   });
-  const canResumeLostRun = run.errorCode === "process_lost" && run.status === "failed";
+  const canResumeLostRun = displayRun.errorCode === "process_lost" && displayRun.status === "failed";
   const resumePayload = useMemo(() => {
     const payload: Record<string, unknown> = {
       resumeFromRunId: run.id,
@@ -2953,7 +2969,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
     },
   });
 
-  const canRetryRun = run.status === "failed" || run.status === "timed_out";
+  const canRetryRun = displayRun.status === "failed" || displayRun.status === "timed_out";
   const retryPayload = useMemo(() => {
     const payload: Record<string, unknown> = {};
     const context = asRecord(run.contextSnapshot);
@@ -2989,8 +3005,8 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
     queryKey: queryKeys.runIssues(run.id),
     queryFn: () => activityApi.issuesForRun(run.id),
   });
-  const narrative = useMemo(() => buildRunNarrative(run, touchedIssues), [run, touchedIssues]);
-  const runDiagnostic = useMemo(() => detectRunDiagnostic(run), [run]);
+  const narrative = useMemo(() => buildRunNarrative(displayRun, touchedIssues), [displayRun, touchedIssues]);
+  const runDiagnostic = useMemo(() => detectRunDiagnostic(displayRun), [displayRun]);
   const touchedIssueIds = useMemo(
     () => Array.from(new Set((touchedIssues ?? []).map((issue) => issue.issueId))),
     [touchedIssues],
@@ -3016,34 +3032,37 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
     },
   });
 
-  const isRunning = run.status === "running" && !!run.startedAt && !run.finishedAt;
+  const isRunning = displayRun.status === "running" && !!displayRun.startedAt && !displayRun.finishedAt;
   const [elapsedSec, setElapsedSec] = useState<number>(() => {
-    if (!run.startedAt) return 0;
-    return Math.max(0, Math.round((Date.now() - new Date(run.startedAt).getTime()) / 1000));
+    if (!displayRun.startedAt) return 0;
+    return Math.max(0, Math.round((Date.now() - new Date(displayRun.startedAt).getTime()) / 1000));
   });
 
   useEffect(() => {
-    if (!isRunning || !run.startedAt) return;
-    const startMs = new Date(run.startedAt).getTime();
+    if (!isRunning || !displayRun.startedAt) return;
+    const startMs = new Date(displayRun.startedAt).getTime();
     setElapsedSec(Math.max(0, Math.round((Date.now() - startMs) / 1000)));
     const id = setInterval(() => {
       setElapsedSec(Math.max(0, Math.round((Date.now() - startMs) / 1000)));
     }, 1000);
     return () => clearInterval(id);
-  }, [isRunning, run.startedAt]);
+  }, [displayRun.startedAt, isRunning]);
 
   const timeFormat: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false };
-  const startTime = run.startedAt ? new Date(run.startedAt).toLocaleTimeString("en-US", timeFormat) : null;
-  const endTime = run.finishedAt ? new Date(run.finishedAt).toLocaleTimeString("en-US", timeFormat) : null;
-  const durationSec = run.startedAt && run.finishedAt
-    ? Math.round((new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime()) / 1000)
+  const startTime = displayRun.startedAt ? new Date(displayRun.startedAt).toLocaleTimeString("en-US", timeFormat) : null;
+  const endTime = displayRun.finishedAt ? new Date(displayRun.finishedAt).toLocaleTimeString("en-US", timeFormat) : null;
+  const durationSec = displayRun.startedAt && displayRun.finishedAt
+    ? Math.round((new Date(displayRun.finishedAt).getTime() - new Date(displayRun.startedAt).getTime()) / 1000)
     : null;
   const displayDurationSec = durationSec ?? (isRunning ? elapsedSec : null);
   const hasMetrics = metrics.input > 0 || metrics.output > 0 || metrics.cached > 0 || metrics.cost > 0;
-  const hasSession = !!(run.sessionIdBefore || run.sessionIdAfter);
-  const sessionChanged = run.sessionIdBefore && run.sessionIdAfter && run.sessionIdBefore !== run.sessionIdAfter;
-  const sessionId = run.sessionIdAfter || run.sessionIdBefore;
-  const hasNonZeroExit = run.exitCode !== null && run.exitCode !== 0;
+  const hasSession = !!(displayRun.sessionIdBefore || displayRun.sessionIdAfter);
+  const sessionChanged =
+    displayRun.sessionIdBefore &&
+    displayRun.sessionIdAfter &&
+    displayRun.sessionIdBefore !== displayRun.sessionIdAfter;
+  const sessionId = displayRun.sessionIdAfter || displayRun.sessionIdBefore;
+  const hasNonZeroExit = displayRun.exitCode !== null && displayRun.exitCode !== 0;
 
   return (
     <div className="space-y-4 min-w-0">
@@ -3053,8 +3072,8 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
           {/* Left column: status + timing */}
           <div className="flex-1 p-4 space-y-3">
             <div className="flex items-center gap-2">
-              <StatusBadge status={run.status} />
-              {(run.status === "running" || run.status === "queued") && (
+              <StatusBadge status={displayRun.status} />
+              {isLiveHeartbeatRunStatus(displayRun.status) && (
                 <Button
                   variant="ghost"
                   size="sm"
@@ -3108,8 +3127,8 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
                   {endTime}
                 </div>
                 <div className="text-[11px] text-muted-foreground">
-                  {relativeTime(run.startedAt!)}
-                  {run.finishedAt && <> &rarr; {relativeTime(run.finishedAt)}</>}
+                  {relativeTime(displayRun.startedAt!)}
+                  {displayRun.finishedAt && <> &rarr; {relativeTime(displayRun.finishedAt)}</>}
                 </div>
                 {displayDurationSec !== null && (
                   <div className="text-xs text-muted-foreground">
@@ -3149,13 +3168,13 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
                 {runDiagnostic.text}
               </div>
             )}
-            {run.error && (
+            {displayRun.error && (
               <div className="text-xs">
-                <span className="text-red-600 dark:text-red-400">{run.error}</span>
-                {run.errorCode && <span className="text-muted-foreground ml-1">({run.errorCode})</span>}
+                <span className="text-red-600 dark:text-red-400">{displayRun.error}</span>
+                {displayRun.errorCode && <span className="text-muted-foreground ml-1">({displayRun.errorCode})</span>}
               </div>
             )}
-            {run.errorCode === "claude_auth_required" && adapterType === "claude_local" && (
+            {displayRun.errorCode === "claude_auth_required" && adapterType === "claude_local" && (
               <div className="space-y-2">
                 <Button
                   variant="outline"
@@ -3204,8 +3223,8 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
             )}
             {hasNonZeroExit && (
               <div className="text-xs text-red-600 dark:text-red-400">
-                Exit code {run.exitCode}
-                {run.signal && <span className="text-muted-foreground ml-1">(signal: {run.signal})</span>}
+                Exit code {displayRun.exitCode}
+                {displayRun.signal && <span className="text-muted-foreground ml-1">(signal: {displayRun.signal})</span>}
               </div>
             )}
           </div>
@@ -3247,16 +3266,16 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
             {sessionOpen && (
               <div className="px-4 pb-3 space-y-1 text-xs">
                 <p className="pb-1 text-muted-foreground">{narrative.session}</p>
-                {run.sessionIdBefore && (
+                {displayRun.sessionIdBefore && (
                   <div className="flex items-center gap-2">
                     <span className="text-muted-foreground w-12">{sessionChanged ? "Before" : "ID"}</span>
-                    <CopyText text={run.sessionIdBefore} className="font-mono" />
+                    <CopyText text={displayRun.sessionIdBefore} className="font-mono" />
                   </div>
                 )}
-                {sessionChanged && run.sessionIdAfter && (
+                {sessionChanged && displayRun.sessionIdAfter && (
                   <div className="flex items-center gap-2">
                     <span className="text-muted-foreground w-12">After</span>
-                    <CopyText text={run.sessionIdAfter} className="font-mono" />
+                    <CopyText text={displayRun.sessionIdAfter} className="font-mono" />
                   </div>
                 )}
                 {touchedIssueIds.length > 0 && (
@@ -3316,23 +3335,23 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
       )}
 
       {/* stderr excerpt for failed runs */}
-      {run.stderrExcerpt && (
+      {displayRun.stderrExcerpt && (
         <div className="space-y-1">
           <span className="text-xs font-medium text-red-600 dark:text-red-400">stderr</span>
-          <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap">{run.stderrExcerpt}</pre>
+          <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap">{displayRun.stderrExcerpt}</pre>
         </div>
       )}
 
       {/* stdout excerpt when no log is available */}
-      {run.stdoutExcerpt && !run.logRef && (
+      {displayRun.stdoutExcerpt && !displayRun.logRef && (
         <div className="space-y-1">
           <span className="text-xs font-medium text-muted-foreground">stdout</span>
-          <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">{run.stdoutExcerpt}</pre>
+          <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">{displayRun.stdoutExcerpt}</pre>
         </div>
       )}
 
       {/* Log viewer */}
-      <LogViewer run={run} adapterType={adapterType} />
+      <LogViewer run={displayRun} adapterType={adapterType} />
       <ScrollToBottom />
     </div>
   );
@@ -3341,9 +3360,8 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
 /* ---- Log Viewer ---- */
 
 function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: string }) {
-  const [events, setEvents] = useState<HeartbeatRunEvent[]>([]);
+  const queryClient = useQueryClient();
   const [logLines, setLogLines] = useState<Array<{ ts: string; stream: "stdout" | "stderr" | "system"; chunk: string }>>([]);
-  const [loading, setLoading] = useState(true);
   const [logLoading, setLogLoading] = useState(!!run.logRef);
   const [logError, setLogError] = useState<string | null>(null);
   const [logOffset, setLogOffset] = useState(0);
@@ -3401,18 +3419,21 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     }
   }
 
-  // Fetch events
-  const { data: initialEvents } = useQuery({
+  const { data: events = [], isLoading: eventsLoading } = useQuery({
     queryKey: ["run-events", run.id],
     queryFn: () => heartbeatsApi.events(run.id, 0, 200),
+    refetchInterval: isLive ? 2000 : false,
   });
 
-  useEffect(() => {
-    if (initialEvents) {
-      setEvents(initialEvents);
-      setLoading(false);
+  const appendEvents = useCallback((incoming: HeartbeatRunEvent[]) => {
+    if (incoming.length === 0) return;
+    const merged = mergeHeartbeatRunEvents(events, incoming);
+    queryClient.setQueryData<HeartbeatRunEvent[]>(["run-events", run.id], merged);
+    if (hasTerminalLifecycleEvent(incoming)) {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.runDetail(run.id) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(run.companyId, run.agentId) });
     }
-  }, [initialEvents]);
+  }, [events, queryClient, run.agentId, run.companyId, run.id]);
 
   const getScrollContainer = useCallback((): ScrollContainer => {
     if (scrollContainerRef.current) return scrollContainerRef.current;
@@ -3557,14 +3578,14 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       try {
         const newEvents = await heartbeatsApi.events(run.id, maxSeq, 100);
         if (newEvents.length > 0) {
-          setEvents((prev) => [...prev, ...newEvents]);
+          appendEvents(newEvents);
         }
       } catch {
         // ignore polling errors
       }
     }, 2000);
     return () => clearInterval(interval);
-  }, [run.id, isLive, isStreamingConnected, events]);
+  }, [appendEvents, events, isLive, isStreamingConnected, run.id]);
 
   // Poll shell log for running runs
   useEffect(() => {
@@ -3668,10 +3689,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           createdAt: new Date(event.createdAt),
         };
 
-        setEvents((prev) => {
-          if (prev.some((existing) => existing.seq === seq)) return prev;
-          return [...prev, liveEvent];
-        });
+        appendEvents([liveEvent]);
       };
 
       socket.onerror = () => {
@@ -3698,7 +3716,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
         socket.close(1000, "run_detail_unmount");
       }
     };
-  }, [isLive, run.companyId, run.id, run.agentId]);
+  }, [appendEvents, isLive, queryClient, run.agentId, run.companyId, run.id]);
 
   const censorUsernameInLogs = useQuery({
     queryKey: queryKeys.instance.generalSettings,
@@ -3735,7 +3753,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     setTranscriptMode("nice");
   }, [run.id]);
 
-  if (loading && logLoading) {
+  if (eventsLoading && logLoading) {
     return <p className="text-xs text-muted-foreground">Loading run logs...</p>;
   }
 

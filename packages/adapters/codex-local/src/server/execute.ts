@@ -17,6 +17,7 @@ import {
   readPaperclipRuntimeSkillEntries,
   resolvePaperclipDesiredSkillNames,
   renderTemplate,
+  renderTaskBindingGuard,
   joinPromptSections,
   redactSensitiveOutputText,
   runChildProcess,
@@ -431,25 +432,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
   const commandNotes = (() => {
+    const workspaceProjectDocNote = suppressWorkspaceProjectDocs
+      ? "Suppressed Codex workspace project docs (including repo-scoped AGENTS.md) via -c project_doc_max_bytes=0."
+      : "Codex exec automatically applies repo-scoped AGENTS.md instructions from the current workspace; Paperclip does not currently suppress that discovery.";
     if (!instructionsFilePath) {
-      return [];
+      return [workspaceProjectDocNote];
     }
     if (instructionsPrefix.length > 0) {
       const notes = [
         `Loaded agent instructions from ${instructionsFilePath}`,
         `Prepended instructions + path directive to stdin prompt (relative references from ${instructionsDir}).`,
+        workspaceProjectDocNote,
       ];
-      if (suppressWorkspaceProjectDocs) {
-        notes.push("Suppressed Codex workspace project docs (including repo-scoped AGENTS.md) via -c project_doc_max_bytes=0.");
-      }
       return notes;
     }
     const notes = [
       `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
+      workspaceProjectDocNote,
     ];
-    if (suppressWorkspaceProjectDocs) {
-      notes.push("Suppressed Codex workspace project docs (including repo-scoped AGENTS.md) via -c project_doc_max_bytes=0.");
-    }
     return notes;
   })();
   const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
@@ -468,10 +468,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  const taskBindingGuard = renderTaskBindingGuard(context);
   const prompt = joinPromptSections([
     instructionsPrefix,
     renderedBootstrapPrompt,
     sessionHandoffNote,
+    taskBindingGuard,
     renderedPrompt,
   ]);
   const promptMetrics = {
@@ -479,6 +481,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     instructionsChars,
     bootstrapPromptChars: renderedBootstrapPrompt.length,
     sessionHandoffChars: sessionHandoffNote.length,
+    taskBindingChars: taskBindingGuard.length,
     heartbeatPromptChars: renderedPrompt.length,
   };
 

@@ -16,6 +16,7 @@ import {
   ensurePaperclipSkillSymlink,
   ensurePathInEnv,
   renderTemplate,
+  renderTaskBindingGuard,
   runChildProcess,
   readPaperclipRuntimeSkillEntries,
   resolvePaperclipDesiredSkillNames,
@@ -270,10 +271,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
         : "";
     const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+    const taskBindingGuard = renderTaskBindingGuard(context);
     const prompt = joinPromptSections([
       instructionsPrefix,
       renderedBootstrapPrompt,
       sessionHandoffNote,
+      taskBindingGuard,
       renderedPrompt,
     ]);
     const promptMetrics = {
@@ -281,6 +284,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       instructionsChars: instructionsPrefix.length,
       bootstrapPromptChars: renderedBootstrapPrompt.length,
       sessionHandoffChars: sessionHandoffNote.length,
+      taskBindingChars: taskBindingGuard.length,
       heartbeatPromptChars: renderedPrompt.length,
     };
 

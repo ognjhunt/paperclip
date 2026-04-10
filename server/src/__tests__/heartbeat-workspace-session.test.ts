@@ -1,12 +1,16 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { agents } from "@paperclipai/db";
 import { sessionCodec as codexSessionCodec } from "@paperclipai/adapter-codex-local/server";
-import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
+import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import {
   buildExplicitResumeSessionOverride,
   formatRuntimeWorkspaceWarningLog,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
+  resolveProjectWorkspacePathForRun,
   resolveRuntimeSessionParamsForWorkspace,
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
@@ -277,6 +281,97 @@ describe("prioritizeProjectWorkspaceCandidatesForRun", () => {
     expect(
       prioritizeProjectWorkspaceCandidatesForRun(rows, "workspace-9").map((row) => row.id),
     ).toEqual(["workspace-1", "workspace-2"]);
+  });
+});
+
+describe("resolveProjectWorkspacePathForRun", () => {
+  it("repairs missing managed workspace paths and keeps the hint usable", async () => {
+    const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-home-"));
+    const previousHome = process.env.PAPERCLIP_HOME;
+
+    try {
+      process.env.PAPERCLIP_HOME = tempHome;
+      const managedCwd = resolveManagedProjectWorkspaceDir({
+        companyId: "company-1",
+        projectId: "project-1",
+      });
+
+      const result = await resolveProjectWorkspacePathForRun({
+        companyId: "company-1",
+        fallbackProjectId: "project-1",
+        workspace: {
+          id: "workspace-1",
+          companyId: "company-1",
+          projectId: "project-1",
+          name: "Primary",
+          sourceType: "local_path",
+          cwd: managedCwd,
+          repoUrl: null,
+          repoRef: "main",
+          defaultRef: "main",
+          visibility: "default",
+          setupCommand: null,
+          cleanupCommand: null,
+          remoteProvider: null,
+          remoteWorkspaceRef: null,
+          sharedWorkspaceKey: null,
+          metadata: null,
+          isPrimary: true,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      });
+
+      expect(result.cwd).toBe(managedCwd);
+      expect(result.hint.cwd).toBe(managedCwd);
+      await expect(fs.stat(managedCwd).then((stats) => stats.isDirectory())).resolves.toBe(true);
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.PAPERCLIP_HOME;
+      } else {
+        process.env.PAPERCLIP_HOME = previousHome;
+      }
+      await fs.rm(tempHome, { recursive: true, force: true });
+    }
+  });
+
+  it("clears stale non-managed workspace hints instead of advertising a missing path", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-stale-workspace-"));
+    const staleCwd = path.join(tempDir, "missing-checkout");
+
+    try {
+      const result = await resolveProjectWorkspacePathForRun({
+        companyId: "company-1",
+        fallbackProjectId: "project-1",
+        workspace: {
+          id: "workspace-1",
+          companyId: "company-1",
+          projectId: "project-1",
+          name: "Primary",
+          sourceType: "local_path",
+          cwd: staleCwd,
+          repoUrl: null,
+          repoRef: "main",
+          defaultRef: "main",
+          visibility: "default",
+          setupCommand: null,
+          cleanupCommand: null,
+          remoteProvider: null,
+          remoteWorkspaceRef: null,
+          sharedWorkspaceKey: null,
+          metadata: null,
+          isPrimary: true,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      });
+
+      expect(result.cwd).toBeNull();
+      expect(result.hint.cwd).toBeNull();
+      expect(result.missingCwd).toBe(staleCwd);
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
   });
 });
 

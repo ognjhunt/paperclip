@@ -311,6 +311,16 @@ type ProjectWorkspaceCandidate = {
   id: string;
 };
 
+type ProjectWorkspaceHint = ResolvedWorkspaceForRun["workspaceHints"][number];
+
+type ProjectWorkspacePathResolution = {
+  cwd: string | null;
+  hint: ProjectWorkspaceHint;
+  warning: string | null;
+  missingCwd: string | null;
+  hasCandidateCwd: boolean;
+};
+
 export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWorkspaceCandidate>(
   rows: T[],
   preferredWorkspaceId: string | null | undefined,
@@ -319,6 +329,69 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
   const preferredIndex = rows.findIndex((row) => row.id === preferredWorkspaceId);
   if (preferredIndex <= 0) return rows;
   return [rows[preferredIndex]!, ...rows.slice(0, preferredIndex), ...rows.slice(preferredIndex + 1)];
+}
+
+export async function resolveProjectWorkspacePathForRun(input: {
+  companyId: string;
+  fallbackProjectId: string | null;
+  workspace: typeof projectWorkspaces.$inferSelect;
+}): Promise<ProjectWorkspacePathResolution> {
+  const repoUrl = readNonEmptyString(input.workspace.repoUrl);
+  const repoRef = readNonEmptyString(input.workspace.repoRef);
+  const rawCwd = readNonEmptyString(input.workspace.cwd);
+  const workspaceProjectId = input.fallbackProjectId ?? input.workspace.projectId;
+  const managedWorkspaceCwd = workspaceProjectId
+    ? resolveManagedProjectWorkspaceDir({
+        companyId: input.companyId,
+        projectId: workspaceProjectId,
+        repoName: deriveRepoNameFromRepoUrl(repoUrl),
+      })
+    : null;
+  const rawCwdExists = rawCwd
+    ? await fs
+        .stat(rawCwd)
+        .then((stats) => stats.isDirectory())
+        .catch(() => false)
+    : false;
+  const shouldRepairManagedWorkspace = Boolean(
+    rawCwd &&
+    managedWorkspaceCwd &&
+    path.resolve(rawCwd) === path.resolve(managedWorkspaceCwd) &&
+    !rawCwdExists,
+  );
+
+  let projectCwd = rawCwd;
+  let managedWorkspaceWarning: string | null = null;
+  if ((!projectCwd || projectCwd === REPO_ONLY_CWD_SENTINEL || shouldRepairManagedWorkspace) && workspaceProjectId) {
+    const managedWorkspace = await ensureManagedProjectWorkspace({
+      companyId: input.companyId,
+      projectId: workspaceProjectId,
+      repoUrl,
+    });
+    projectCwd = managedWorkspace.cwd;
+    managedWorkspaceWarning = managedWorkspace.warning;
+  }
+
+  const projectCwdExists = projectCwd
+    ? await fs
+        .stat(projectCwd)
+        .then((stats) => stats.isDirectory())
+        .catch(() => false)
+    : false;
+  const resolvedCwd = projectCwdExists ? projectCwd : null;
+
+  return {
+    cwd: resolvedCwd,
+    hint: {
+      workspaceId: input.workspace.id,
+      cwd: resolvedCwd,
+      repoUrl,
+      repoRef,
+    },
+    warning: managedWorkspaceWarning,
+    missingCwd: resolvedCwd ? null : projectCwd,
+    hasCandidateCwd: Boolean(projectCwd),
+  };
 }
 
 function readNonEmptyString(value: unknown): string | null {
@@ -1182,12 +1255,7 @@ export function heartbeatService(db: Db) {
       preferredProjectWorkspaceId,
     );
 
-    const workspaceHints = projectWorkspaceRows.map((workspace) => ({
-      workspaceId: workspace.id,
-      cwd: readNonEmptyString(workspace.cwd),
-      repoUrl: readNonEmptyString(workspace.repoUrl),
-      repoRef: readNonEmptyString(workspace.repoRef),
-    }));
+    const workspaceHints: ProjectWorkspaceHint[] = [];
 
     if (projectWorkspaceRows.length > 0) {
       const preferredWorkspace = preferredProjectWorkspaceId
@@ -1196,53 +1264,71 @@ export function heartbeatService(db: Db) {
       const missingProjectCwds: string[] = [];
       let hasConfiguredProjectCwd = false;
       let preferredWorkspaceWarning: string | null = null;
+      let selectedWorkspace: {
+        cwd: string;
+        workspaceId: string;
+        repoUrl: string | null;
+        repoRef: string | null;
+        warning: string | null;
+      } | null = null;
       if (preferredProjectWorkspaceId && !preferredWorkspace) {
         preferredWorkspaceWarning =
           `Selected project workspace "${preferredProjectWorkspaceId}" is not available on this project.`;
       }
       for (const workspace of projectWorkspaceRows) {
-        let projectCwd = readNonEmptyString(workspace.cwd);
-        let managedWorkspaceWarning: string | null = null;
-        if (!projectCwd || projectCwd === REPO_ONLY_CWD_SENTINEL) {
-          try {
-            const managedWorkspace = await ensureManagedProjectWorkspace({
-              companyId: agent.companyId,
-              projectId: workspaceProjectId ?? resolvedProjectId ?? workspace.projectId,
-              repoUrl: readNonEmptyString(workspace.repoUrl),
-            });
-            projectCwd = managedWorkspace.cwd;
-            managedWorkspaceWarning = managedWorkspace.warning;
-          } catch (error) {
-            if (preferredWorkspace?.id === workspace.id) {
-              preferredWorkspaceWarning = error instanceof Error ? error.message : String(error);
+        try {
+          const resolution = await resolveProjectWorkspacePathForRun({
+            companyId: agent.companyId,
+            fallbackProjectId: workspaceProjectId ?? resolvedProjectId,
+            workspace,
+          });
+          workspaceHints.push(resolution.hint);
+          hasConfiguredProjectCwd ||= resolution.hasCandidateCwd;
+          if (resolution.cwd) {
+            if (!selectedWorkspace) {
+              selectedWorkspace = {
+                cwd: resolution.cwd,
+                workspaceId: workspace.id,
+                repoUrl: workspace.repoUrl,
+                repoRef: workspace.repoRef,
+                warning: resolution.warning,
+              };
             }
             continue;
           }
-        }
-        hasConfiguredProjectCwd = true;
-        const projectCwdExists = await fs
-          .stat(projectCwd)
-          .then((stats) => stats.isDirectory())
-          .catch(() => false);
-        if (projectCwdExists) {
-          return {
-            cwd: projectCwd,
-            source: "project_primary" as const,
-            projectId: resolvedProjectId,
+          if (preferredWorkspace?.id === workspace.id && resolution.missingCwd) {
+            preferredWorkspaceWarning =
+              `Selected project workspace path "${resolution.missingCwd}" is not available yet.`;
+          }
+          if (resolution.missingCwd) {
+            missingProjectCwds.push(resolution.missingCwd);
+          }
+        } catch (error) {
+          workspaceHints.push({
             workspaceId: workspace.id,
-            repoUrl: workspace.repoUrl,
-            repoRef: workspace.repoRef,
-            workspaceHints,
-            warnings: [preferredWorkspaceWarning, managedWorkspaceWarning].filter(
-              (value): value is string => Boolean(value),
-            ),
-          };
+            cwd: null,
+            repoUrl: readNonEmptyString(workspace.repoUrl),
+            repoRef: readNonEmptyString(workspace.repoRef),
+          });
+          if (preferredWorkspace?.id === workspace.id) {
+            preferredWorkspaceWarning = error instanceof Error ? error.message : String(error);
+          }
         }
-        if (preferredWorkspace?.id === workspace.id) {
-          preferredWorkspaceWarning =
-            `Selected project workspace path "${projectCwd}" is not available yet.`;
-        }
-        missingProjectCwds.push(projectCwd);
+      }
+
+      if (selectedWorkspace) {
+        return {
+          cwd: selectedWorkspace.cwd,
+          source: "project_primary" as const,
+          projectId: resolvedProjectId,
+          workspaceId: selectedWorkspace.workspaceId,
+          repoUrl: selectedWorkspace.repoUrl,
+          repoRef: selectedWorkspace.repoRef,
+          workspaceHints,
+          warnings: [preferredWorkspaceWarning, selectedWorkspace.warning].filter(
+            (value): value is string => Boolean(value),
+          ),
+        };
       }
 
       const fallbackCwd = resolveDefaultAgentWorkspaceDir(agent.id);
@@ -2093,6 +2179,9 @@ export function heartbeatService(db: Db) {
           .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
           .then((rows) => rows[0] ?? null)
       : null;
+    if (!readNonEmptyString(context.taskTitle) && issueContext?.title) {
+      context.taskTitle = issueContext.title;
+    }
     const issueAssigneeOverrides =
       issueContext && issueContext.assigneeAgentId === agent.id
         ? parseIssueAssigneeAdapterOverrides(

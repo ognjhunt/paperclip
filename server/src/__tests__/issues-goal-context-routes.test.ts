@@ -40,6 +40,7 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: () => ({
     wakeup: vi.fn(async () => undefined),
     reportRunActivity: vi.fn(async () => undefined),
+    getRun: vi.fn(async () => null),
   }),
   issueApprovalService: () => ({}),
   issueService: () => mockIssueService,
@@ -183,5 +184,20 @@ describe("issue goal context routes", () => {
       }),
     );
     expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
+  });
+
+  it("supports the legacy heartbeat-context route shape", async () => {
+    const res = await request(createApp()).get(
+      "/api/issues/heartbeat-context/11111111-1111-4111-8111-111111111111",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.issue.goalId).toBe(projectGoal.id);
+    expect(res.body.goal).toEqual(
+      expect.objectContaining({
+        id: projectGoal.id,
+        title: projectGoal.title,
+      }),
+    );
   });
 });
