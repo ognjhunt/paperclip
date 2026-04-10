@@ -86,6 +86,60 @@ console.log("session_id: sess-success");
     );
   });
 
+  it("returns a terminal failure when the ladder exhausts on a 404 model miss", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-404-"));
+    const commandPath = path.join(root, "hermes");
+    const modelsLogPath = path.join(root, "models.log");
+
+    await writeFakeHermesCommand(
+      commandPath,
+      `
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+if (args.includes("--version")) {
+  console.log("hermes-test 0.0.0");
+  process.exit(0);
+}
+const modelIndex = args.indexOf("-m");
+const model = modelIndex >= 0 ? args[modelIndex + 1] : "missing-model";
+fs.appendFileSync(${JSON.stringify(modelsLogPath)}, model + "\\n");
+console.log("⚠️  API call failed (attempt 1/3): NotFoundError [HTTP 404]");
+console.log("🔌 Provider: openrouter  Model: " + model);
+console.log("📝 Error: HTTP 404: No endpoints found for " + model + ".");
+console.log("❌ Non-retryable client error (HTTP 404). Aborting.");
+console.log("session_id: sess-404");
+process.exit(0);
+`,
+    );
+
+    const result = await execute({
+      runId: "run-404",
+      agent: {
+        id: "agent-404",
+        companyId: "company-1",
+        name: "Hermes 404 Agent",
+        adapterConfig: {
+          hermesCommand: commandPath,
+          cwd: root,
+          model: "stepfun/step-3.5-flash:free",
+          provider: "openrouter",
+          blueprintHermesModelLadder: ["stepfun/step-3.5-flash:free"],
+          persistSession: false,
+        },
+      },
+      runtime: {},
+      config: {},
+      onLog: async () => {},
+    } as never);
+
+    expect(result.errorCode).toBe("model_not_found");
+    expect(result.errorMessage).toContain("No endpoints found");
+    expect(result.resultJson).toMatchObject({
+      attempted_models: ["stepfun/step-3.5-flash:free"],
+    });
+    expect(await fs.readFile(modelsLogPath, "utf8")).toBe("stepfun/step-3.5-flash:free\n");
+  });
+
   it("never defaults back to a Claude model when Hermes config is missing", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-default-"));
     const commandPath = path.join(root, "hermes");

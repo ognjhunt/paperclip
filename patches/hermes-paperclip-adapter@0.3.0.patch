@@ -1,24 +1,8 @@
---- a/dist/shared/constants.js
-+++ b/dist/shared/constants.js
-@@ -12,7 +12,7 @@
- /** Grace period after SIGTERM before SIGKILL (seconds). */
- export const DEFAULT_GRACE_SEC = 10;
- /** Default model to use if none specified. */
--export const DEFAULT_MODEL = "anthropic/claude-sonnet-4";
-+export const DEFAULT_MODEL = "openrouter/free";
- /**
-  * Valid --provider choices for the hermes CLI.
-  * Must stay in sync with `hermes chat --help`.
-@@ -81,4 +81,4 @@
- export const TOOL_OUTPUT_PREFIX = "┊";
- /** Prefix for Hermes thinking blocks. */
- export const THINKING_PREFIX = "💭";
--//# sourceMappingURL=constants.js.map
-\ No newline at end of file
-+//# sourceMappingURL=constants.js.map
+diff --git a/dist/server/detect-model.js b/dist/server/detect-model.js
+index bf8e4e64..c723bf45 100644
 --- a/dist/server/detect-model.js
 +++ b/dist/server/detect-model.js
-@@ -82,6 +82,12 @@
+@@ -82,6 +82,12 @@ export function parseModelFromConfig(content) {
   */
  export function inferProviderFromModel(model) {
      const lower = model.toLowerCase();
@@ -31,16 +15,18 @@
      // Strip provider/ prefix if present (e.g. "anthropic/claude-sonnet-4")
      const bareName = lower.includes("/") ? lower.split("/").pop() : lower;
      for (const [prefix, hint] of MODEL_PREFIX_PROVIDER_HINTS) {
-@@ -129,4 +135,4 @@
+@@ -129,4 +135,4 @@ export function resolveProvider(options) {
      // 4. Let Hermes auto-detect
      return { provider: "auto", resolvedFrom: "auto" };
  }
 -//# sourceMappingURL=detect-model.js.map
 \ No newline at end of file
 +//# sourceMappingURL=detect-model.js.map
+diff --git a/dist/server/execute.js b/dist/server/execute.js
+index e96d5c9c..2fb993a0 100644
 --- a/dist/server/execute.js
 +++ b/dist/server/execute.js
-@@ -37,63 +37,164 @@
+@@ -37,63 +37,171 @@ function cfgStringArray(v) {
          ? v
          : undefined;
  }
@@ -119,6 +105,13 @@
 +            message: summarizeFailure(parsed.response || parsed.errorMessage || combined),
 +        };
 +    }
++    if (/http\s*404|notfounderror|no endpoints found for|non-retryable client error\s*\(http 404\)|invalid model|unknown model/i.test(combined)) {
++        return {
++            retryable: false,
++            errorCode: "model_not_found",
++            message: summarizeFailure(parsed.response || parsed.errorMessage || combined),
++        };
++    }
 +    if (/anthropic|claude/i.test(normalized)
 +        && /(credential|api key|auth|unauthorized|forbidden|missing|not found)/i.test(normalized)) {
 +        return {
@@ -179,12 +172,14 @@
  
  {{#taskId}}
 -## Assigned Task
+-
+-Issue ID: {{taskId}}
+-Title: {{taskTitle}}
 +Assigned task:
 +- Issue ID: {{taskId}}
 +- Title: {{taskTitle}}
  
--Issue ID: {{taskId}}
--Title: {{taskTitle}}
+-{{taskBody}}
 +Start with:
 +1. Read compact context:
 +   curl -fsS -H "Authorization: Bearer $PAPERCLIP_API_KEY" "{{paperclipApiUrl}}/issues/{{taskId}}/heartbeat-context"
@@ -193,8 +188,6 @@
 +3. Checkout before work:
 +   curl -fsS -X POST "{{paperclipApiUrl}}/issues/{{taskId}}/checkout" -H "Authorization: Bearer $PAPERCLIP_API_KEY" -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" -H "Content-Type: application/json" -d "{\"agentId\":\"$PAPERCLIP_AGENT_ID\",\"expectedStatuses\":[\"todo\",\"backlog\",\"blocked\"]}"
  
--{{taskBody}}
--
 -## Workflow
 -
 -1. Work on the task using your tools
@@ -246,7 +239,7 @@
  {{/noTask}}`;
  function buildPrompt(ctx, config) {
      const template = cfgString(config.promptTemplate) || DEFAULT_PROMPT_TEMPLATE;
-@@ -245,9 +346,7 @@
+@@ -245,9 +353,7 @@ function parseHermesOutput(stdout, stderr) {
  // ---------------------------------------------------------------------------
  export async function execute(ctx) {
      const config = (ctx.agent?.adapterConfig ?? {});
@@ -256,7 +249,7 @@
      const timeoutSec = cfgNumber(config.timeoutSec) || DEFAULT_TIMEOUT_SEC;
      const graceSec = cfgNumber(config.graceSec) || DEFAULT_GRACE_SEC;
      const maxTurns = cfgNumber(config.maxTurnsPerRun);
-@@ -256,18 +355,10 @@
+@@ -256,18 +362,10 @@ export async function execute(ctx) {
      const persistSession = cfgBoolean(config.persistSession) !== false;
      const worktreeMode = cfgBoolean(config.worktreeMode) === true;
      const checkpoints = cfgBoolean(config.checkpoints) === true;
@@ -278,7 +271,7 @@
      if (!explicitProvider) {
          try {
              detectedConfig = await detectModel();
-@@ -276,58 +367,7 @@
+@@ -276,58 +374,7 @@ export async function execute(ctx) {
              // Non-fatal — detection failure shouldn't block execution
          }
      }
@@ -338,7 +331,7 @@
      const env = {
          ...process.env,
          ...buildPaperclipEnv(ctx.agent),
-@@ -341,7 +381,6 @@
+@@ -341,7 +388,6 @@ export async function execute(ctx) {
      if (userEnv && typeof userEnv === "object") {
          Object.assign(env, userEnv);
      }
@@ -346,7 +339,7 @@
      const cwd = cfgString(config.cwd) || cfgString(ctx.config?.workspaceDir) || ".";
      try {
          await ensureAbsoluteDirectory(cwd);
-@@ -349,22 +388,9 @@
+@@ -349,22 +395,9 @@ export async function execute(ctx) {
      catch {
          // Non-fatal
      }
@@ -369,7 +362,7 @@
              const isBenign = /^\[?\d{4}[-/]\d{2}[-/]\d{2}T/.test(trimmed) || // structured timestamps
                  /^[A-Z]+:\s+(INFO|DEBUG|WARN|WARNING)\b/.test(trimmed) || // log levels
                  /Successfully registered all tools/.test(trimmed) ||
-@@ -377,52 +403,134 @@
+@@ -377,52 +410,134 @@ export async function execute(ctx) {
          }
          return ctx.onLog(stream, chunk);
      };
@@ -385,6 +378,27 @@
 -    await ctx.onLog("stdout", `[hermes] Exit code: ${result.exitCode ?? "null"}, timed out: ${result.timedOut}\n`);
 -    if (parsed.sessionId) {
 -        await ctx.onLog("stdout", `[hermes] Session: ${parsed.sessionId}\n`);
+-    }
+-    // ── Build result ───────────────────────────────────────────────────────
+-    const executionResult = {
+-        exitCode: result.exitCode,
+-        signal: result.signal,
+-        timedOut: result.timedOut,
+-        provider: resolvedProvider,
+-        model,
+-    };
+-    if (parsed.errorMessage) {
+-        executionResult.errorMessage = parsed.errorMessage;
+-    }
+-    if (parsed.usage) {
+-        executionResult.usage = parsed.usage;
+-    }
+-    if (parsed.costUsd !== undefined) {
+-        executionResult.costUsd = parsed.costUsd;
+-    }
+-    // Summary from agent response
+-    if (parsed.response) {
+-        executionResult.summary = parsed.response.slice(0, 2000);
 +    const prevSessionId = cfgString(ctx.runtime?.sessionParams?.sessionId);
 +    const attemptedModels = [];
 +    const failedAttempts = [];
@@ -498,13 +512,12 @@
 +        }
 +        return executionResult;
      }
--    // ── Build result ───────────────────────────────────────────────────────
--    const executionResult = {
--        exitCode: result.exitCode,
--        signal: result.signal,
--        timedOut: result.timedOut,
--        provider: resolvedProvider,
--        model,
+-    // Set resultJson so Paperclip can persist run metadata (used for UI display + auto-comments)
+-    executionResult.resultJson = {
+-        result: parsed.response || "",
+-        session_id: parsed.sessionId || null,
+-        usage: parsed.usage || null,
+-        cost_usd: parsed.costUsd ?? null,
 +    return {
 +        exitCode: 1,
 +        timedOut: false,
@@ -521,26 +534,6 @@
 +            failed_attempts: failedAttempts,
 +        },
      };
--    if (parsed.errorMessage) {
--        executionResult.errorMessage = parsed.errorMessage;
--    }
--    if (parsed.usage) {
--        executionResult.usage = parsed.usage;
--    }
--    if (parsed.costUsd !== undefined) {
--        executionResult.costUsd = parsed.costUsd;
--    }
--    // Summary from agent response
--    if (parsed.response) {
--        executionResult.summary = parsed.response.slice(0, 2000);
--    }
--    // Set resultJson so Paperclip can persist run metadata (used for UI display + auto-comments)
--    executionResult.resultJson = {
--        result: parsed.response || "",
--        session_id: parsed.sessionId || null,
--        usage: parsed.usage || null,
--        cost_usd: parsed.costUsd ?? null,
--    };
 -    // Store session ID for next run
 -    if (persistSession && parsed.sessionId) {
 -        executionResult.sessionParams = { sessionId: parsed.sessionId };
@@ -551,3 +544,23 @@
 -//# sourceMappingURL=execute.js.map
 \ No newline at end of file
 +//# sourceMappingURL=execute.js.map
+diff --git a/dist/shared/constants.js b/dist/shared/constants.js
+index c8be1d15..31783d25 100644
+--- a/dist/shared/constants.js
++++ b/dist/shared/constants.js
+@@ -12,7 +12,7 @@ export const DEFAULT_TIMEOUT_SEC = 1800;
+ /** Grace period after SIGTERM before SIGKILL (seconds). */
+ export const DEFAULT_GRACE_SEC = 10;
+ /** Default model to use if none specified. */
+-export const DEFAULT_MODEL = "anthropic/claude-sonnet-4";
++export const DEFAULT_MODEL = "openrouter/free";
+ /**
+  * Valid --provider choices for the hermes CLI.
+  * Must stay in sync with `hermes chat --help`.
+@@ -81,4 +81,4 @@ export const COST_REGEX = /(?:cost|spent)[:\s]*\$?([\d.]+)/i;
+ export const TOOL_OUTPUT_PREFIX = "┊";
+ /** Prefix for Hermes thinking blocks. */
+ export const THINKING_PREFIX = "💭";
+-//# sourceMappingURL=constants.js.map
+\ No newline at end of file
++//# sourceMappingURL=constants.js.map
