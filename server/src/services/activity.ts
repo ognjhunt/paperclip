@@ -9,8 +9,18 @@ export interface ActivityFilters {
   entityId?: string;
 }
 
+export function resolveBoundIssueIdFromContextSnapshot(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+): string | null {
+  const taskId = typeof contextSnapshot?.taskId === "string" ? contextSnapshot.taskId.trim() : "";
+  if (taskId) return taskId;
+  const issueId = typeof contextSnapshot?.issueId === "string" ? contextSnapshot.issueId.trim() : "";
+  return issueId || null;
+}
+
 export function activityService(db: Db) {
   const issueIdAsText = sql<string>`${issues.id}::text`;
+  const boundIssueId = sql<string | null>`coalesce(${heartbeatRuns.contextSnapshot} ->> 'taskId', ${heartbeatRuns.contextSnapshot} ->> 'issueId')`;
   return {
     list: (filters: ActivityFilters) => {
       const conditions = [eq(activityLog.companyId, filters.companyId)];
@@ -78,8 +88,8 @@ export function activityService(db: Db) {
           and(
             eq(heartbeatRuns.companyId, companyId),
             or(
-              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
-              sql`exists (
+              sql`${boundIssueId} = ${issueId}`,
+              sql`${boundIssueId} is null and exists (
                 select 1
                 from ${activityLog}
                 where ${activityLog.companyId} = ${companyId}
@@ -125,8 +135,8 @@ export function activityService(db: Db) {
 
       const context = run.contextSnapshot;
       const contextIssueId =
-        context && typeof context === "object" && typeof (context as Record<string, unknown>).issueId === "string"
-          ? ((context as Record<string, unknown>).issueId as string)
+        context && typeof context === "object"
+          ? resolveBoundIssueIdFromContextSnapshot(context as Record<string, unknown>)
           : null;
       if (!contextIssueId) return fromActivity;
       if (fromActivity.some((issue) => issue.issueId === contextIssueId)) return fromActivity;
