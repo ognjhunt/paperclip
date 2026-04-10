@@ -199,6 +199,44 @@ async function ensureManagedProjectWorkspace(input: {
   }
 }
 
+const heartbeatRunListResultJson = sql<Record<string, unknown> | null>`
+  nullif(
+    jsonb_strip_nulls(
+      jsonb_build_object(
+        'summary', nullif(left(${heartbeatRuns.resultJson}->>'summary', 500), ''),
+        'result', nullif(left(${heartbeatRuns.resultJson}->>'result', 500), ''),
+        'message', nullif(left(${heartbeatRuns.resultJson}->>'message', 500), ''),
+        'error', nullif(left(${heartbeatRuns.resultJson}->>'error', 500), ''),
+        'total_cost_usd', case when ${heartbeatRuns.resultJson} ? 'total_cost_usd' then ${heartbeatRuns.resultJson}->'total_cost_usd' else null end,
+        'cost_usd', case when ${heartbeatRuns.resultJson} ? 'cost_usd' then ${heartbeatRuns.resultJson}->'cost_usd' else null end,
+        'costUsd', case when ${heartbeatRuns.resultJson} ? 'costUsd' then ${heartbeatRuns.resultJson}->'costUsd' else null end
+      )
+    ),
+    '{}'::jsonb
+  )
+`.as("resultJson");
+
+const heartbeatRunListContextSnapshot = sql<Record<string, unknown> | null>`
+  nullif(
+    jsonb_strip_nulls(
+      jsonb_build_object(
+        'issueId', ${heartbeatRuns.contextSnapshot}->>'issueId',
+        'issueIdentifier', ${heartbeatRuns.contextSnapshot}->>'issueIdentifier',
+        'issueTitle', ${heartbeatRuns.contextSnapshot}->>'issueTitle',
+        'taskId', ${heartbeatRuns.contextSnapshot}->>'taskId',
+        'taskKey', ${heartbeatRuns.contextSnapshot}->>'taskKey',
+        'projectId', ${heartbeatRuns.contextSnapshot}->>'projectId',
+        'routineId', ${heartbeatRuns.contextSnapshot}->>'routineId',
+        'wakeReason', ${heartbeatRuns.contextSnapshot}->>'wakeReason',
+        'source', ${heartbeatRuns.contextSnapshot}->>'source',
+        'commentId', ${heartbeatRuns.contextSnapshot}->>'commentId',
+        'forceFreshSession', case when ${heartbeatRuns.contextSnapshot} ? 'forceFreshSession' then ${heartbeatRuns.contextSnapshot}->'forceFreshSession' else null end
+      )
+    ),
+    '{}'::jsonb
+  )
+`.as("contextSnapshot");
+
 const heartbeatRunListColumns = {
   id: heartbeatRuns.id,
   companyId: heartbeatRuns.companyId,
@@ -213,7 +251,7 @@ const heartbeatRunListColumns = {
   exitCode: heartbeatRuns.exitCode,
   signal: heartbeatRuns.signal,
   usageJson: heartbeatRuns.usageJson,
-  resultJson: heartbeatRuns.resultJson,
+  resultJson: heartbeatRunListResultJson,
   sessionIdBefore: heartbeatRuns.sessionIdBefore,
   sessionIdAfter: heartbeatRuns.sessionIdAfter,
   logStore: heartbeatRuns.logStore,
@@ -229,7 +267,7 @@ const heartbeatRunListColumns = {
   processStartedAt: heartbeatRuns.processStartedAt,
   retryOfRunId: heartbeatRuns.retryOfRunId,
   processLossRetryCount: heartbeatRuns.processLossRetryCount,
-  contextSnapshot: heartbeatRuns.contextSnapshot,
+  contextSnapshot: heartbeatRunListContextSnapshot,
   createdAt: heartbeatRuns.createdAt,
   updatedAt: heartbeatRuns.updatedAt,
 } as const;
