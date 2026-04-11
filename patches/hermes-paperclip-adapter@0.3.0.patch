@@ -368,7 +368,7 @@ index e96d5c9c0d175a06c668406ba57ac8f5ba750901..94300b3793d5621b0c14a80f48bf8f50
              const isBenign = /^\[?\d{4}[-/]\d{2}[-/]\d{2}T/.test(trimmed) || // structured timestamps
                  /^[A-Z]+:\s+(INFO|DEBUG|WARN|WARNING)\b/.test(trimmed) || // log levels
                  /Successfully registered all tools/.test(trimmed) ||
-@@ -377,52 +423,137 @@ export async function execute(ctx) {
+@@ -377,52 +423,138 @@ export async function execute(ctx) {
          }
          return ctx.onLog(stream, chunk);
      };
@@ -454,6 +454,7 @@ index e96d5c9c0d175a06c668406ba57ac8f5ba750901..94300b3793d5621b0c14a80f48bf8f50
 +            timeoutSec,
 +            graceSec,
 +            onLog: wrappedOnLog,
++            onSpawn: ctx.onSpawn,
 +        });
 +        const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
 +        await ctx.onLog("stdout", `[hermes] Exit code: ${result.exitCode ?? "null"}, timed out: ${result.timedOut}\n`);

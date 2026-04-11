@@ -212,6 +212,41 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.checkoutRunId).toBe(runId);
   });
 
+  it("queues exactly one retry when a tracked local run is lost before pid metadata is recorded", async () => {
+    const { agentId, runId, issueId } = await seedRunFixture({
+      adapterType: "hermes_local",
+      processPid: null,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+
+    const failedRun = runs.find((row) => row.id === runId);
+    const retryRun = runs.find((row) => row.id !== runId);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("process_lost");
+    expect(failedRun?.error).toContain("retrying once");
+    expect(retryRun?.status).toBe("queued");
+    expect(retryRun?.retryOfRunId).toBe(runId);
+    expect(retryRun?.processLossRetryCount).toBe(1);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
+    expect(issue?.checkoutRunId).toBe(runId);
+  });
+
   it("does not queue a second retry after the first process-loss retry was already used", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       processPid: 999_999_999,

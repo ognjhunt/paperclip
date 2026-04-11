@@ -86,6 +86,48 @@ console.log("session_id: sess-success");
     );
   });
 
+  it("forwards onSpawn so Paperclip can record the child pid for orphan recovery", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-onspawn-"));
+    const commandPath = path.join(root, "hermes");
+
+    await writeFakeHermesCommand(
+      commandPath,
+      `
+if (process.argv.includes("--version")) {
+  console.log("hermes-test 0.0.0");
+  process.exit(0);
+}
+console.log("Hermes child started");
+console.log("session_id: sess-onspawn");
+`,
+    );
+
+    let spawnedPid: number | null = null;
+    const result = await execute({
+      runId: "run-onspawn",
+      agent: {
+        id: "agent-onspawn",
+        companyId: "company-1",
+        name: "Hermes Spawn Agent",
+        adapterConfig: {
+          hermesCommand: commandPath,
+          cwd: root,
+          persistSession: false,
+        },
+      },
+      runtime: {},
+      config: {},
+      onLog: async () => {},
+      onSpawn: async ({ pid }) => {
+        spawnedPid = pid;
+      },
+    } as never);
+
+    expect(result.errorMessage).toBeUndefined();
+    expect(typeof spawnedPid).toBe("number");
+    expect((spawnedPid ?? 0) > 0).toBe(true);
+  });
+
   it("stops the Hermes ladder immediately on shared OpenRouter free-pool limits", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-shared-pool-"));
     const commandPath = path.join(root, "hermes");
