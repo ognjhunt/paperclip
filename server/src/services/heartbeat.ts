@@ -704,6 +704,38 @@ function describeSessionResetReason(
   return null;
 }
 
+function resolveConfiguredAutomationExecutionProfile(
+  adapterConfig: Record<string, unknown> | null | undefined,
+): "default" | "automation_compact" {
+  if (!adapterConfig) return "automation_compact";
+  if (typeof adapterConfig.automationCompactEnabled === "boolean") {
+    return adapterConfig.automationCompactEnabled ? "automation_compact" : "default";
+  }
+  const explicitProfile = readNonEmptyString(adapterConfig.automationExecutionProfile);
+  if (explicitProfile === "default" || explicitProfile === "automation_compact") {
+    return explicitProfile;
+  }
+  return "automation_compact";
+}
+
+function applyExecutionProfileContext(
+  contextSnapshot: Record<string, unknown>,
+  run: Pick<typeof heartbeatRuns.$inferSelect, "invocationSource">,
+  agent: Pick<typeof agents.$inferSelect, "adapterConfig">,
+) {
+  const explicitProfile = readNonEmptyString(contextSnapshot.executionProfile);
+  const executionProfile =
+    explicitProfile === "default" || explicitProfile === "automation_compact"
+      ? explicitProfile
+      : run.invocationSource === "automation"
+        ? resolveConfiguredAutomationExecutionProfile(parseObject(agent.adapterConfig))
+        : "default";
+
+  contextSnapshot.executionProfile = executionProfile;
+  contextSnapshot.automationVerbosity = executionProfile === "automation_compact" ? "quiet" : "default";
+  contextSnapshot.transcriptMode = executionProfile === "automation_compact" ? "compact" : "default";
+}
+
 function deriveCommentId(
   contextSnapshot: Record<string, unknown> | null | undefined,
   payload: Record<string, unknown> | null | undefined,
@@ -2506,6 +2538,7 @@ export function heartbeatService(db: Db) {
       })(),
     };
     context.paperclipWorkspaces = resolvedWorkspace.workspaceHints;
+    applyExecutionProfileContext(context, run, agent);
     const runtimeServiceIntents = (() => {
       const runtimeConfig = parseObject(resolvedConfig.workspaceRuntime);
       return Array.isArray(runtimeConfig.services)

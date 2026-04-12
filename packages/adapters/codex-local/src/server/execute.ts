@@ -9,6 +9,7 @@ import {
   asStringArray,
   parseObject,
   buildPaperclipEnv,
+  normalizeExecutionProfile,
   redactEnvForLogs,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
@@ -16,13 +17,14 @@ import {
   ensurePathInEnv,
   readPaperclipRuntimeSkillEntries,
   resolvePaperclipDesiredSkillNames,
+  renderAutomationCompactPromptGuard,
   renderTemplate,
   renderTaskBindingGuard,
   joinPromptSections,
   redactSensitiveOutputText,
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
-import { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
+import { parseCodexJsonl, isCodexToolRuntimeFailure, isCodexUnknownSessionError } from "./parse.js";
 import { pathExists, prepareManagedCodexHome, resolveManagedCodexHomeDir, resolveSharedCodexHomeDir } from "./codex-home.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
 
@@ -68,6 +70,16 @@ function resolveCodexBiller(env: Record<string, string>, billingType: "api" | "s
   const openAiCompatibleBiller = inferOpenAiCompatibleBiller(env, "openai");
   if (openAiCompatibleBiller === "openrouter") return "openrouter";
   return billingType === "subscription" ? "chatgpt" : openAiCompatibleBiller ?? "openai";
+}
+
+function resolveAutomationCompactEnabled(config: Record<string, unknown>): boolean {
+  if (typeof config.automationCompactEnabled === "boolean") {
+    return config.automationCompactEnabled;
+  }
+  const profile = asString(config.automationExecutionProfile, "").trim();
+  if (profile === "default") return false;
+  if (profile === "automation_compact") return true;
+  return true;
 }
 
 async function isLikelyPaperclipRepoRoot(candidate: string): Promise<boolean> {
@@ -222,11 +234,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const command = asString(config.command, "codex");
   const model = asString(config.model, "");
-  const modelReasoningEffort = asString(
+  const configuredModelReasoningEffort = asString(
     config.modelReasoningEffort,
     asString(config.reasoningEffort, ""),
   );
-  const search = asBoolean(config.search, false);
+  const contextExecutionProfile = normalizeExecutionProfile(context.executionProfile);
+  const compactAutomationProfile =
+    contextExecutionProfile === "automation_compact" && resolveAutomationCompactEnabled(config);
+  const modelReasoningEffort = compactAutomationProfile && configuredModelReasoningEffort.trim().length === 0
+    ? "low"
+    : configuredModelReasoningEffort;
+  const search = compactAutomationProfile ? asBoolean(config.search, false) : asBoolean(config.search, false);
   const bypass = asBoolean(
     config.dangerouslyBypassApprovalsAndSandbox,
     asBoolean(config.dangerouslyBypassSandbox, false),
@@ -271,8 +289,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const desiredSkillNames = resolveCodexDesiredSkillNames(config, codexSkillEntries);
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const preparedManagedCodexHome =
-    configuredCodexHome ? null : await prepareManagedCodexHome(process.env, onLog, agent.companyId);
-  const defaultCodexHome = resolveManagedCodexHomeDir(process.env, agent.companyId);
+    configuredCodexHome
+      ? null
+      : await prepareManagedCodexHome(
+        process.env,
+        onLog,
+        agent.companyId,
+        compactAutomationProfile ? "automation_compact" : "default",
+      );
+  const defaultCodexHome = resolveManagedCodexHomeDir(
+    process.env,
+    agent.companyId,
+    compactAutomationProfile ? "automation_compact" : "default",
+  );
   const effectiveCodexHome = configuredCodexHome ?? preparedManagedCodexHome ?? defaultCodexHome;
   await fs.mkdir(effectiveCodexHome, { recursive: true });
   // Inject skills into the same CODEX_HOME that Codex will actually run with
@@ -419,9 +448,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     try {
       const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
       instructionsPrefix =
-        `${instructionsContents}\n\n` +
-        `The above agent instructions were loaded from ${instructionsFilePath}. ` +
-        `Resolve any relative file references from ${instructionsDir}.\n\n`;
+        compactAutomationProfile
+          ? `${instructionsContents}\n\nInstructions file: ${instructionsFilePath}. Resolve relative references from ${instructionsDir}.\n\n`
+          : `${instructionsContents}\n\n` +
+            `The above agent instructions were loaded from ${instructionsFilePath}. ` +
+            `Resolve any relative file references from ${instructionsDir}.\n\n`;
       instructionsChars = instructionsPrefix.length;
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
@@ -435,21 +466,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const workspaceProjectDocNote = suppressWorkspaceProjectDocs
       ? "Suppressed Codex workspace project docs (including repo-scoped AGENTS.md) via -c project_doc_max_bytes=0."
       : "Codex exec automatically applies repo-scoped AGENTS.md instructions from the current workspace; Paperclip does not currently suppress that discovery.";
+    const profileNote = compactAutomationProfile
+      ? "Automation compact execution profile is active for this run."
+      : null;
     if (!instructionsFilePath) {
-      return [workspaceProjectDocNote];
+      return [profileNote, workspaceProjectDocNote].filter((value): value is string => Boolean(value));
     }
     if (instructionsPrefix.length > 0) {
       const notes = [
+        profileNote,
         `Loaded agent instructions from ${instructionsFilePath}`,
         `Prepended instructions + path directive to stdin prompt (relative references from ${instructionsDir}).`,
         workspaceProjectDocNote,
-      ];
+      ].filter((value): value is string => Boolean(value));
       return notes;
     }
     const notes = [
+      profileNote,
       `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
       workspaceProjectDocNote,
-    ];
+    ].filter((value): value is string => Boolean(value));
     return notes;
   })();
   const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
@@ -469,11 +505,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : "";
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const taskBindingGuard = renderTaskBindingGuard(context);
+  const automationCompactGuard = renderAutomationCompactPromptGuard(context);
   const prompt = joinPromptSections([
     instructionsPrefix,
     renderedBootstrapPrompt,
     sessionHandoffNote,
     taskBindingGuard,
+    automationCompactGuard,
     renderedPrompt,
   ]);
   const promptMetrics = {
@@ -482,6 +520,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     bootstrapPromptChars: renderedBootstrapPrompt.length,
     sessionHandoffChars: sessionHandoffNote.length,
     taskBindingChars: taskBindingGuard.length,
+    automationCompactChars: automationCompactGuard.length,
     heartbeatPromptChars: renderedPrompt.length,
   };
 
@@ -575,15 +614,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       parsedError ||
       stderrLine ||
       `Codex exited with code ${attempt.proc.exitCode ?? -1}`;
+    const toolRuntimeFailure = isCodexToolRuntimeFailure(
+      attempt.proc.stdout,
+      attempt.rawStderr,
+      fallbackErrorMessage,
+    );
 
     return {
       exitCode: attempt.proc.exitCode,
       signal: attempt.proc.signal,
       timedOut: false,
-      errorMessage:
-        (attempt.proc.exitCode ?? 0) === 0
+      errorMessage: toolRuntimeFailure
+        ? "Codex lost access to its local exec tooling during the run."
+        : (attempt.proc.exitCode ?? 0) === 0
           ? null
           : fallbackErrorMessage,
+      errorCode: toolRuntimeFailure ? "tool_runtime_unavailable" : null,
+      errorMeta: toolRuntimeFailure
+        ? {
+          reason: "tool_runtime_unavailable",
+          retryable: false,
+        }
+        : undefined,
       usage: attempt.parsed.usage,
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,

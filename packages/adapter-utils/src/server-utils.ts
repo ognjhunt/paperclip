@@ -2,6 +2,9 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
 import type {
+  AdapterAutomationVerbosity,
+  AdapterExecutionProfile,
+  AdapterTranscriptMode,
   AdapterSkillEntry,
   AdapterSkillSnapshot,
 } from "./types.js";
@@ -48,6 +51,9 @@ const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../skills",
   "../../../../../skills",
 ];
+const REQUIRED_PAPERCLIP_SKILL_KEYS = new Set<string>([
+  "paperclipai/paperclip/paperclip",
+]);
 
 export interface PaperclipSkillEntry {
   key: string;
@@ -467,13 +473,19 @@ export async function listPaperclipSkillEntries(
     const entries = await fs.readdir(root, { withFileTypes: true });
     return entries
       .filter((entry) => entry.isDirectory())
-      .map((entry) => ({
-        key: `paperclipai/paperclip/${entry.name}`,
-        runtimeName: entry.name,
-        source: path.join(root, entry.name),
-        required: true,
-        requiredReason: "Bundled Paperclip skills are always available for local adapters.",
-      }));
+      .map((entry) => {
+        const key = `paperclipai/paperclip/${entry.name}`;
+        const required = REQUIRED_PAPERCLIP_SKILL_KEYS.has(key);
+        return {
+          key,
+          runtimeName: entry.name,
+          source: path.join(root, entry.name),
+          required,
+          requiredReason: required
+            ? "Core Paperclip coordination skills are always available for local adapters."
+            : null,
+        };
+      });
   } catch {
     return [];
   }
@@ -724,6 +736,59 @@ export function writePaperclipSkillSyncPreference(
   );
   next.paperclipSkillSync = current;
   return next;
+}
+
+function readNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+export function normalizeExecutionProfile(value: unknown): AdapterExecutionProfile {
+  return value === "automation_compact" ? "automation_compact" : "default";
+}
+
+export function normalizeAutomationVerbosity(value: unknown): AdapterAutomationVerbosity {
+  return value === "quiet" ? "quiet" : "default";
+}
+
+export function normalizeTranscriptMode(value: unknown): AdapterTranscriptMode {
+  return value === "compact" ? "compact" : "default";
+}
+
+export function isAutomationCompactExecutionProfile(
+  context: Record<string, unknown> | null | undefined,
+): boolean {
+  return normalizeExecutionProfile(context?.executionProfile) === "automation_compact";
+}
+
+export function renderAutomationCompactPromptGuard(
+  context: Record<string, unknown> | null | undefined,
+): string {
+  if (!isAutomationCompactExecutionProfile(context)) return "";
+
+  const verbosity = normalizeAutomationVerbosity(context?.automationVerbosity);
+  const transcriptMode = normalizeTranscriptMode(context?.transcriptMode);
+  const lines = [
+    "Automation compact run policy:",
+    "- Keep progress updates sparse and high-signal.",
+    "- Do not narrate routine reads, searches, or command invocations.",
+    "- Only send commentary when blocked, when the plan materially changes, before substantive edits, or at final completion.",
+  ];
+
+  if (verbosity === "quiet") {
+    lines.push("- Prefer one concise update per substantial milestone.");
+  }
+  if (transcriptMode === "compact") {
+    lines.push("- Favor terse updates because the run UI will compact repetitive automation chatter.");
+  }
+
+  const issueId = readNonEmptyString(context?.issueId);
+  if (issueId) {
+    lines.push(`- Stay tightly scoped to issue ${issueId}.`);
+  }
+
+  return lines.join("\n");
 }
 
 export async function ensurePaperclipSkillSymlink(

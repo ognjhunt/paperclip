@@ -1,5 +1,8 @@
 import { asString, asNumber, parseObject, parseJson } from "@paperclipai/adapter-utils/server-utils";
 
+export const CODEX_TOOL_RUNTIME_FAILURE_RE =
+  /(?:CreateProcess .*No such file or directory|Failed to create unified exec process|exec_command failed|write_stdin failed: stdin is closed|rerun exec_command with tty=true to keep stdin open)/i;
+
 export function parseCodexJsonl(stdout: string) {
   let sessionId: string | null = null;
   const messages: string[] = [];
@@ -70,4 +73,13 @@ export function isCodexUnknownSessionError(stdout: string, stderr: string): bool
   return /unknown (session|thread)|session .* not found|thread .* not found|conversation .* not found|missing rollout path for thread|state db missing rollout path/i.test(
     haystack,
   );
+}
+
+export function isCodexToolRuntimeFailure(stdout: string, stderr: string, message?: string | null): boolean {
+  const haystack = `${message ?? ""}\n${stdout}\n${stderr}`
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+  return CODEX_TOOL_RUNTIME_FAILURE_RE.test(haystack);
 }
