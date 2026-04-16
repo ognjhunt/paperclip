@@ -15,6 +15,7 @@ describe("codex_local parser", () => {
     const parsed = parseCodexJsonl(stdout);
     expect(parsed.sessionId).toBe("thread-123");
     expect(parsed.summary).toBe("hello");
+    expect(parsed.turnCompleted).toBe(true);
     expect(parsed.usage).toEqual({
       inputTokens: 10,
       cachedInputTokens: 2,

@@ -1,9 +1,13 @@
 import { asString, asNumber, parseObject, parseJson } from "@paperclipai/adapter-utils/server-utils";
 
+export const CODEX_TOOL_RUNTIME_FAILURE_RE =
+  /(?:CreateProcess .*No such file or directory|Failed to create unified exec process|exec_command failed|write_stdin failed: stdin is closed|rerun exec_command with tty=true to keep stdin open)/i;
+
 export function parseCodexJsonl(stdout: string) {
   let sessionId: string | null = null;
   const messages: string[] = [];
   let errorMessage: string | null = null;
+  let turnCompleted = false;
   const usage = {
     inputTokens: 0,
     cachedInputTokens: 0,
@@ -39,6 +43,7 @@ export function parseCodexJsonl(stdout: string) {
     }
 
     if (type === "turn.completed") {
+      turnCompleted = true;
       const usageObj = parseObject(event.usage);
       usage.inputTokens = asNumber(usageObj.input_tokens, usage.inputTokens);
       usage.cachedInputTokens = asNumber(usageObj.cached_input_tokens, usage.cachedInputTokens);
@@ -56,6 +61,7 @@ export function parseCodexJsonl(stdout: string) {
   return {
     sessionId,
     summary: messages.join("\n\n").trim(),
+    turnCompleted,
     usage,
     errorMessage,
   };
@@ -70,4 +76,13 @@ export function isCodexUnknownSessionError(stdout: string, stderr: string): bool
   return /unknown (session|thread)|session .* not found|thread .* not found|conversation .* not found|missing rollout path for thread|state db missing rollout path/i.test(
     haystack,
   );
+}
+
+export function isCodexToolRuntimeFailure(stdout: string, stderr: string, message?: string | null): boolean {
+  const haystack = `${message ?? ""}\n${stdout}\n${stderr}`
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+  return CODEX_TOOL_RUNTIME_FAILURE_RE.test(haystack);
 }
