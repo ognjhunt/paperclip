@@ -712,4 +712,49 @@ console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_messag
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it("rejects cleanly when the Codex command is missing", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-missing-command-"));
+    const workspace = path.join(root, "workspace");
+    await fs.mkdir(workspace, { recursive: true });
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      await expect(
+        execute({
+          runId: "run-missing-codex-command",
+          agent: {
+            id: "agent-1",
+            companyId: "company-1",
+            name: "Codex Coder",
+            adapterType: "codex_local",
+            adapterConfig: {},
+          },
+          runtime: {
+            sessionId: null,
+            sessionParams: null,
+            sessionDisplayId: null,
+            taskKey: null,
+          },
+          config: {
+            command: "__paperclip_missing_codex__",
+            cwd: workspace,
+            env: {
+              PATH: root,
+            },
+            promptTemplate: "Follow the paperclip heartbeat.",
+          },
+          context: {},
+          authToken: "run-jwt-token",
+          onLog: async () => {},
+        }),
+      ).rejects.toThrow('Command not found in PATH: "__paperclip_missing_codex__"');
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });

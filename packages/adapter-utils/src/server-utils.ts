@@ -375,6 +375,13 @@ async function resolveSpawnTarget(
   env: NodeJS.ProcessEnv,
 ): Promise<SpawnTarget> {
   const resolved = await resolveCommandPath(command, cwd, env);
+  if (!resolved) {
+    if (command.includes("/") || command.includes("\\")) {
+      const absolute = path.isAbsolute(command) ? command : path.resolve(cwd, command);
+      throw new Error(`Command is not executable: "${command}" (resolved: "${absolute}")`);
+    }
+    throw new Error(`Command not found in PATH: "${command}"`);
+  }
   const executable = resolved ?? command;
 
   if (process.platform !== "win32") {
